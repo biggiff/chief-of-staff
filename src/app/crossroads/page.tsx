@@ -1,5 +1,5 @@
-import { desc } from "drizzle-orm";
-import { db, decisions } from "@/db";
+import { desc, eq } from "drizzle-orm";
+import { db, decisions, crossroadDiscussions } from "@/db";
 import {
   PageShell,
   Card,
@@ -17,14 +17,23 @@ import { formatDate } from "@/lib/dates";
 export const dynamic = "force-dynamic";
 
 const STATUS_OPTS = [
-  { value: "open", label: "Open" },
+  { value: "active", label: "Active" },
   { value: "decided", label: "Decided" },
-  { value: "revisiting", label: "Revisiting" },
+  { value: "reopened", label: "Reopened" },
   { value: "archived", label: "Archived" },
 ];
 
 export default async function CrossroadsPage() {
   const list = await db.select().from(decisions).orderBy(desc(decisions.updatedAt));
+  const allDiscussions = await db
+    .select()
+    .from(crossroadDiscussions)
+    .orderBy(crossroadDiscussions.createdAt);
+  const timelineByDecision = new Map<string, typeof allDiscussions>();
+  for (const d of allDiscussions) {
+    if (!timelineByDecision.has(d.decisionId)) timelineByDecision.set(d.decisionId, []);
+    timelineByDecision.get(d.decisionId)!.push(d);
+  }
 
   return (
     <PageShell
@@ -76,6 +85,24 @@ export default async function CrossroadsPage() {
                 <span className="font-medium text-neutral-800">Reasoning:</span> {d.reasoning}
               </p>
             )}
+
+            {(timelineByDecision.get(d.id)?.length ?? 0) > 0 && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs text-neutral-500 list-none">
+                  Discussion timeline ({timelineByDecision.get(d.id)!.length})
+                </summary>
+                <ol className="mt-2 border-l-2 border-neutral-200 pl-3 space-y-2">
+                  {timelineByDecision.get(d.id)!.map((t) => (
+                    <li key={t.id} className="text-xs text-neutral-600">
+                      <div className="text-neutral-400">{formatDate(t.createdAt)}</div>
+                      {t.leaning && <div><span className="font-medium text-neutral-700">Leaning:</span> {t.leaning}</div>}
+                      {t.note && <div className="text-neutral-500">{t.note}</div>}
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
+
             <div className="mt-3 flex flex-wrap gap-2">
               <details className="inline-block">
                 <summary className="cursor-pointer text-sm text-neutral-600 hover:underline list-none px-2 py-1.5">Edit</summary>

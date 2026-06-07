@@ -10,6 +10,7 @@ import {
   roleAttentionEvents as attentionTable,
   workingAgreements as agreementsTable,
   decisions as decisionsTable,
+  crossroadDiscussions as discussionsTable,
   insights as insightsTable,
   activityLog as activityTable,
   type AttentionType,
@@ -473,6 +474,7 @@ export async function manageRole(input: {
   name?: string;
   importance?: string;
   status?: string;
+  reason?: string; // why a significant change (esp. rename) is being made
   conversationId?: string | null;
 }) {
   const roles = await activeRoles();
@@ -503,17 +505,25 @@ export async function manageRole(input: {
   }
 
   // update
-  const prev = { name: role.name, importanceLevel: role.importanceLevel, currentStatus: role.currentStatus };
+  const isRename = !!input.name && input.name !== role.name;
+  const prevHistory = Array.isArray(role.changeHistory) ? (role.changeHistory as unknown[]) : [];
+  const newHistory = isRename
+    ? [...prevHistory, { from: role.name, to: input.name, reason: input.reason ?? null, at: new Date().toISOString() }]
+    : prevHistory;
+  const prev = { name: role.name, importanceLevel: role.importanceLevel, currentStatus: role.currentStatus, changeHistory: role.changeHistory };
   await db
     .update(rolesTable)
     .set({
       name: input.name ?? role.name,
       importanceLevel: (input.importance ?? role.importanceLevel) as never,
       currentStatus: (input.status ?? role.currentStatus) as never,
+      changeHistory: newHistory as never,
       updatedAt: new Date(),
     })
     .where(eq(rolesTable.id, role.id));
-  const summary = input.name && input.name !== role.name ? `Renamed role "${role.name}" → "${input.name}"` : `Updated role "${role.name}"`;
+  const summary = isRename
+    ? `Renamed role "${role.name}" → "${input.name}"${input.reason ? ` (${input.reason})` : ""}`
+    : `Updated role "${role.name}"`;
   await logActivity({ actionKind: "role", summary, entityTable: "roles", entityId: role.id, undoPayload: { op: "update", id: role.id, prev }, conversationId: input.conversationId });
   return { ok: true, summary };
 }
@@ -588,6 +598,34 @@ export async function listCrossroads(query?: string, includeArchived = false) {
     }));
 }
 
+/** Full Crossroad detail incl. the discussion timeline. */
+export async function getCrossroadDetail(query: string) {
+  const d = await findDecision(query);
+  if (!d) return { ok: false, summary: "Couldn't find that crossroad." };
+  const history = await db
+    .select()
+    .from(discussionsTable)
+    .where(eq(discussionsTable.decisionId, d.id))
+    .orderBy(discussionsTable.createdAt);
+  return {
+    ok: true,
+    title: d.title,
+    description: d.description,
+    status: d.status,
+    currentLeaning: d.currentLeaning ?? d.decision ?? null,
+    unresolvedConcerns: d.unresolvedConcerns ?? null,
+    revisitCount: d.revisitCount,
+    firstDiscussedAt: d.firstDiscussedAt?.toISOString() ?? null,
+    latestDiscussedAt: d.latestDiscussedAt?.toISOString() ?? null,
+    timeline: history.map((h) => ({
+      at: h.createdAt.toISOString(),
+      leaning: h.leaning,
+      concerns: h.concerns,
+      note: h.note,
+    })),
+  };
+}
+
 export async function manageCrossroad(input: {
   action: "create" | "update" | "archive";
   query?: string;
@@ -597,6 +635,7 @@ export async function manageCrossroad(input: {
   currentLeaning?: string;
   unresolvedConcerns?: string;
   reasoning?: string;
+  whatChanged?: string; // note for this discussion entry
   conversationId?: string | null;
 }) {
   if (input.action === "create") {
@@ -604,7 +643,7 @@ export async function manageCrossroad(input: {
     // Guard against duplicates (incl. a model double-call in one turn).
     const dup = await findDecision(input.title);
     if (dup && dup.status !== "archived") {
-      return { ok: true, summary: `That crossroad already exists ("${dup.title}").`, duplicate: true };
+      return { ok: true, summary: `That crossroad already exists ("${dup.title}").`, duplicate: true, existingTitle: dup.title };
     }
     const now = new Date();
     const [d] = await db
@@ -612,7 +651,7 @@ export async function manageCrossroad(input: {
       .values({
         title: input.title.slice(0, 200),
         description: input.description ?? null,
-        status: (input.status ?? "open") as never,
+        status: (input.status ?? "active") as never,
         currentLeaning: input.currentLeaning ?? null,
         unresolvedConcerns: input.unresolvedConcerns ?? null,
         reasoning: input.reasoning ?? null,
@@ -621,6 +660,13 @@ export async function manageCrossroad(input: {
         revisitCount: 0,
       })
       .returning();
+    // First timeline entry.
+    await db.insert(discussionsTable).values({
+      decisionId: d.id,
+      leaning: input.currentLeaning ?? null,
+      concerns: input.unresolvedConcerns ?? null,
+      note: input.whatChanged ?? "First discussed.",
+    });
     const summary = `Opened crossroad "${d.title}"`;
     await logActivity({ actionKind: "crossroad", summary, entityTable: "decisions", entityId: d.id, undoPayload: { op: "create", id: d.id }, conversationId: input.conversationId });
     return { ok: true, summary };
@@ -637,7 +683,7 @@ export async function manageCrossroad(input: {
     return { ok: true, summary };
   }
 
-  // update — also counts as a revisit
+  // update — counts as a revisit; append a timeline entry capturing this discussion.
   const prev = {
     title: d.title, description: d.description, status: d.status,
     currentLeaning: d.currentLeaning, unresolvedConcerns: d.unresolvedConcerns, reasoning: d.reasoning,
@@ -656,6 +702,12 @@ export async function manageCrossroad(input: {
       updatedAt: new Date(),
     })
     .where(eq(decisionsTable.id, d.id));
+  await db.insert(discussionsTable).values({
+    decisionId: d.id,
+    leaning: input.currentLeaning ?? d.currentLeaning,
+    concerns: input.unresolvedConcerns ?? d.unresolvedConcerns,
+    note: input.whatChanged ?? null,
+  });
   const summary = `Updated crossroad "${d.title}" (revisit #${d.revisitCount + 1})`;
   await logActivity({ actionKind: "crossroad", summary, entityTable: "decisions", entityId: d.id, undoPayload: { op: "update", id: d.id, prev }, conversationId: input.conversationId });
   return { ok: true, summary };
@@ -834,8 +886,8 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         if (p.op === "create") await db.delete(rolesTable).where(eq(rolesTable.id, id));
         else if (p.op === "archive") await db.update(rolesTable).set({ archivedAt: null }).where(eq(rolesTable.id, id));
         else if (p.op === "update") {
-          const prev = p.prev as { name: string; importanceLevel: string; currentStatus: string };
-          await db.update(rolesTable).set({ name: prev.name, importanceLevel: prev.importanceLevel as never, currentStatus: prev.currentStatus as never }).where(eq(rolesTable.id, id));
+          const prev = p.prev as { name: string; importanceLevel: string; currentStatus: string; changeHistory?: unknown };
+          await db.update(rolesTable).set({ name: prev.name, importanceLevel: prev.importanceLevel as never, currentStatus: prev.currentStatus as never, changeHistory: (prev.changeHistory ?? null) as never }).where(eq(rolesTable.id, id));
         }
         break;
       }

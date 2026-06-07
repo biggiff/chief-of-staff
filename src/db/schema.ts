@@ -32,7 +32,7 @@ export type EnergyLevel = "low" | "medium" | "high";
 export type TaskStatus = "open" | "completed" | "archived";
 export type Priority = "low" | "medium" | "high";
 export type IdeaStatus = "captured" | "resurfaced" | "active" | "archived";
-export type DecisionStatus = "open" | "decided" | "revisiting" | "archived";
+export type DecisionStatus = "active" | "open" | "decided" | "revisiting" | "reopened" | "archived";
 export type IntegrationStatus = "not_connected" | "connected" | "error";
 export type MessageRole = "user" | "chief_of_staff" | "system";
 export type AttentionType =
@@ -63,6 +63,9 @@ export const roles = pgTable("roles", {
   // Per-role scoring overrides (e.g. { attentionWeights: { progress: 4 } }).
   // Null = use global defaults. This is the seam for per-role weighting later.
   scoringConfig: jsonb("scoring_config"),
+  // History of significant changes (renames etc.) with reasoning:
+  // [{ from, to, reason, at }]. Preserved as context for future reasoning.
+  changeHistory: jsonb("change_history"),
   archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -276,6 +279,23 @@ export const activityLog = pgTable("activity_log", {
   undoneAt: timestamp("undone_at", { withTimezone: true }),
 });
 
+/* --------------------- Crossroad discussion timeline ------------------- */
+
+/**
+ * One entry per time a Crossroad (decision) is discussed — the history that lets
+ * Scout summarize prior conclusions and explain how the current conversation
+ * differs from past ones.
+ */
+export const crossroadDiscussions = pgTable("crossroad_discussions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  decisionId: uuid("decision_id").notNull().references(() => decisions.id, { onDelete: "cascade" }),
+  leaning: text("leaning"),
+  concerns: text("concerns"),
+  note: text("note"), // what changed / context for this discussion
+  source: text("source").notNull().default("chat"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* ------------------------ Working agreements --------------------------- */
 
 /**
@@ -328,3 +348,4 @@ export type Insight = typeof insights.$inferSelect;
 export type ActivityLog = typeof activityLog.$inferSelect;
 export type TodoistProjectLink = typeof todoistProjectLinks.$inferSelect;
 export type WorkingAgreement = typeof workingAgreements.$inferSelect;
+export type CrossroadDiscussion = typeof crossroadDiscussions.$inferSelect;

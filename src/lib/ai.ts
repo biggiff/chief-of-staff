@@ -39,6 +39,7 @@ import {
   manageProject,
   manageCrossroad,
   listCrossroads,
+  getCrossroadDetail,
   recordObservation,
   listObservations,
   listActivity,
@@ -105,6 +106,16 @@ Email (Gmail): you can read her mail across all folders (search_emails uses Gmai
 
 Email labels = life areas. She labels forwarded mail by which part of her life it's from (e.g. Bakery, PTO, Founder). search_emails and read_email return each email's labels — surface them and use them to route/group ("3 unread under PTO"). To filter by one, search with label:"Name" (use list_email_labels if you need the exact names).
 
+Crossroads (recurring decisions — the anti-re-litigation engine): when she raises a real decision (e.g. the bakery's future, Doughrway/App direction, PTO involvement level, a health-strategy or major family decision), FIRST search_crossroads to see if it already exists.
+- If it EXISTS, this is the most important behavior: your FIRST move is to RECAP, before any new advice. Call get_crossroad, then literally open your reply with "We've been here before" (or similar) and summarize: where you landed last time (prior leaning), the unresolved concerns, and — if she's said something new — how this time differs. Do NOT jump straight to fresh opinions, and do NOT skip the recap.
+  - Only AFTER recapping, if she's actually shared a NEW leaning/concern/development, call manage_crossroad action=update with the new leaning/concerns and what_changed (this bumps the revisit count + adds to the timeline). If she hasn't added anything new yet (e.g. "I'm torn again"), just recap and ask what's changed — do NOT update or bump the revisit count for a no-op.
+  - Never create a duplicate.
+- If it's NEW and clearly a recurring/weighty decision: gather her leaning + the concern, then create it (manage_crossroad action=create), and confirm briefly.
+- If the same unresolved decision keeps coming up but isn't tracked yet, SUGGEST one: "We've circled the bakery a few times — want me to make it a Crossroad so we stop starting from scratch?" (don't auto-create on a hunch — ask first).
+The point is to never re-decide from zero: lean on the timeline so each discussion builds on the last.
+
+Role renames: when you rename a role, always pass a reason to manage_role — the reasoning behind name changes is preserved as context for future observations and prioritization.
+
 Working agreements: when she tells you how to operate ("always…", "from now on…", "stop doing…", "I prefer…") or corrects your behavior, save it with add_working_agreement so it sticks across sessions, then confirm in one line. The active agreements are listed at the top of the context — treat them as binding.
 
 Trust: confirm briefly what changed; don't over-explain unless she asks why. Every action is undoable ("undo that").
@@ -161,6 +172,11 @@ async function buildContext(): Promise<string> {
     if (s.daysSinceAttention != null) bits.push(`days_since_attention=${s.daysSinceAttention}`);
     if (s.maxAvoidanceCount >= 2) bits.push(`avoided="${s.topAvoidedTaskTitle}"x${s.maxAvoidanceCount}`);
     lines.push(`- ${s.role.name}: ${bits.join(", ")}`);
+    const hist = Array.isArray(s.role.changeHistory) ? (s.role.changeHistory as { from?: string; reason?: string }[]) : [];
+    const lastRename = hist[hist.length - 1];
+    if (lastRename?.from) {
+      lines.push(`    (formerly "${lastRename.from}"${lastRename.reason ? ` — ${lastRename.reason}` : ""})`);
+    }
   }
 
   // Unassigned open tasks (synced from Todoist, no role yet), grouped by list.
@@ -325,6 +341,7 @@ const TOOLS: Anthropic.Tool[] = [
         name: { type: "string", description: "New name (create, or rename on update)." },
         importance: { type: "string", enum: ["low", "medium", "high"] },
         status: { type: "string", enum: ["thriving", "healthy", "maintaining", "needs_attention", "critical"] },
+        reason: { type: "string", description: "Why a significant change (esp. a rename) is being made — preserved as context. Always capture this on renames." },
       },
       required: ["action"],
     },
@@ -347,12 +364,17 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "search_crossroads",
-    description: "List/search Crossroads (recurring decisions): title, status, current leaning, unresolved concerns, revisit count. Use to check 'have we decided this before?'",
+    description: "List/search Crossroads (recurring decisions): title, status, current leaning, unresolved concerns, revisit count. ALWAYS check this first when she raises a decision, to see if it already exists.",
     input_schema: { type: "object", properties: { query: { type: "string" } } },
   },
   {
+    name: "get_crossroad",
+    description: "Get one Crossroad's full detail and its discussion timeline (every past leaning, concern, and what changed). Use to say 'we've been here before' and summarize prior discussions / how this time differs.",
+    input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
     name: "manage_crossroad",
-    description: "Create, update, or archive a Crossroad (a recurring decision). update/archive find it by query. Track current_leaning, unresolved_concerns, status (open/decided/revisiting/archived). Updating counts as a revisit.",
+    description: "Create, update, or archive a Crossroad (a recurring decision). update/archive find it by query. UPDATE counts as a revisit and appends to the timeline — use it (not create) when an existing decision resurfaces. Track current_leaning, unresolved_concerns, status, and what_changed since last time.",
     input_schema: {
       type: "object",
       properties: {
@@ -360,9 +382,10 @@ const TOOLS: Anthropic.Tool[] = [
         query: { type: "string", description: "Existing crossroad to update/archive." },
         title: { type: "string" },
         description: { type: "string" },
-        status: { type: "string", enum: ["open", "decided", "revisiting", "archived"] },
+        status: { type: "string", enum: ["active", "decided", "reopened", "archived"] },
         current_leaning: { type: "string" },
         unresolved_concerns: { type: "string" },
+        what_changed: { type: "string", description: "What's new/different in this discussion vs. last time." },
         reasoning: { type: "string" },
       },
       required: ["action"],
@@ -666,6 +689,7 @@ async function runTool(
       name: input.name as string | undefined,
       importance: input.importance as string | undefined,
       status: input.status as string | undefined,
+      reason: input.reason as string | undefined,
       conversationId,
     });
     return j(res);
@@ -687,6 +711,10 @@ async function runTool(
     return j({ ok: true, crossroads: await listCrossroads(input.query as string | undefined) });
   }
 
+  if (name === "get_crossroad") {
+    return j(await getCrossroadDetail(input.query as string));
+  }
+
   if (name === "manage_crossroad") {
     return j(
       await manageCrossroad({
@@ -697,6 +725,7 @@ async function runTool(
         status: input.status as string | undefined,
         currentLeaning: input.current_leaning as string | undefined,
         unresolvedConcerns: input.unresolved_concerns as string | undefined,
+        whatChanged: input.what_changed as string | undefined,
         reasoning: input.reasoning as string | undefined,
         conversationId,
       })

@@ -578,9 +578,29 @@ export async function manageProject(input: {
 
 /* ----------------------------- Crossroads ------------------------------ */
 
+// Fuzzy match a decision by title (token overlap) so "doughrway pricing",
+// "free vs paid", etc. all resolve to the one canonical crossroad — and so the
+// create-dedup catches near-duplicate titles.
 async function findDecision(query: string) {
-  const [d] = await db.select().from(decisionsTable).where(ilike(decisionsTable.title, `%${query}%`)).limit(1);
-  return d ?? null;
+  const rows = await db.select().from(decisionsTable);
+  const q = normalizeText(query);
+  const qWords = q.split(" ").filter(Boolean);
+  const scored = rows
+    .map((d) => {
+      const t = normalizeText(d.title);
+      let s = 0;
+      if (t === q) s = 100;
+      else if (t.includes(q) || q.includes(t)) s = 85;
+      else {
+        const tw = new Set(t.split(" ").filter(Boolean));
+        const overlap = qWords.filter((w) => tw.has(w)).length;
+        s = (overlap / Math.max(qWords.length, 1)) * 70;
+      }
+      return { d, s };
+    })
+    .filter((x) => x.s >= 45)
+    .sort((a, b) => b.s - a.s);
+  return scored[0]?.d ?? null;
 }
 
 export async function listCrossroads(query?: string, includeArchived = false) {

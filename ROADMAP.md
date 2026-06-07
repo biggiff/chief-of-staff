@@ -9,10 +9,11 @@ The user speaks naturally; Scout translates intent into Compass operations.
 | 3.1 | Working Agreements — standing instructions that shape Scout's behavior | ✅ done |
 | 3.2 | **Crossroads Engine** — recurring-decision tracking ("we've been here before") | ✅ done |
 | 3.3 | **Observation Engine** — automatic, quality-first cross-source pattern detection | ✅ done |
-| 3.4 | **Briefing Intelligence** — briefings that draw on roles, attention, crossroads, observations, email, calendar | ⬜ next |
+| 3.4 | **Briefing Intelligence** — briefings that draw on roles, attention, crossroads, observations, email, calendar | ✅ done |
 | 3.5 | **Natural Language Layer** — user never needs Compass terminology | ⬜ planned (spec below) |
 
 Build order: **3.3 → 3.4 → 3.5.** Pause for testing after each.
+Next up: **3.5 Natural Language Layer** (spec below).
 
 ---
 

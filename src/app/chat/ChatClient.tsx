@@ -109,26 +109,85 @@ export default function ChatClient({
   const [image, setImage] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [waiting, setWaiting] = useState(false); // a reply may be generating from a prior turn
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-picking the same file
-    if (!file) return;
+  async function attachFile(file: File | null | undefined) {
+    if (!file || !file.type.startsWith("image/")) return;
     try {
       setImage(await fileToResizedDataUrl(file));
     } catch {
       setError("Couldn't read that image.");
     }
   }
+
+  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    await attachFile(file);
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    attachFile([...e.dataTransfer.files].find((f) => f.type.startsWith("image/")));
+  }
+
+  function onPaste(e: React.ClipboardEvent) {
+    const item = [...(e.clipboardData?.items ?? [])].find((i) => i.type.startsWith("image/"));
+    if (item) {
+      e.preventDefault();
+      attachFile(item.getAsFile());
+    }
+  }
+
   const landed = useRef(false);
 
   useEffect(() => {
     // Open at the most recent message: jump instantly on first load, smooth after.
     bottomRef.current?.scrollIntoView({ behavior: landed.current ? "smooth" : "auto" });
     landed.current = true;
-  }, [messages, sending]);
+  }, [messages, sending, waiting]);
+
+  // Resilient replies: if we land here and the last message is ours with no reply,
+  // Scout may still be working server-side (e.g. you popped into Compass). Poll
+  // until the reply lands instead of losing it.
+  useEffect(() => {
+    const last = initialMessages[initialMessages.length - 1];
+    if (!last || last.role !== "user") return;
+    let active = true;
+    let tries = 0;
+    setWaiting(true);
+    const iv = setInterval(async () => {
+      tries++;
+      try {
+        const res = await fetch("/api/chat");
+        const data = await res.json();
+        const msgs: { id: string; role: Msg["role"]; content: string; metadataJson?: { image?: string } | null }[] =
+          data.messages ?? [];
+        const lastFetched = msgs[msgs.length - 1];
+        if (active && lastFetched?.role === "chief_of_staff" && msgs.length >= initialMessages.length) {
+          setMessages(msgs.map((x) => ({ id: x.id, role: x.role, content: x.content, image: x.metadataJson?.image ?? null })));
+          setWaiting(false);
+          clearInterval(iv);
+        }
+      } catch {
+        /* keep polling */
+      }
+      if (tries >= 20 && active) {
+        setWaiting(false);
+        clearInterval(iv);
+      }
+    }, 3000);
+    return () => {
+      active = false;
+      clearInterval(iv);
+    };
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function send(text: string) {
     const content = text.trim();
@@ -176,7 +235,22 @@ export default function ChatClient({
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="relative flex flex-col h-full"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDragOver(false);
+      }}
+      onDrop={onDrop}
+    >
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-0 z-30 m-3 flex items-center justify-center rounded-2xl border-2 border-dashed border-neutral-400 bg-white/80 text-sm font-medium text-neutral-600">
+          Drop image to attach
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto px-4 py-5">
         <div className="mx-auto max-w-2xl space-y-4">
           {glance && <ScoutGlance glance={glance} />}
@@ -204,10 +278,10 @@ export default function ChatClient({
               </div>
             </div>
           ))}
-          {sending && (
+          {(sending || waiting) && (
             <div className="flex justify-start">
               <div className="bg-white border border-neutral-200 rounded-2xl rounded-bl-sm px-4 py-2.5 text-sm text-neutral-400">
-                thinking…
+                {waiting && !sending ? "Scout's still on it…" : "thinking…"}
               </div>
             </div>
           )}
@@ -278,6 +352,7 @@ export default function ChatClient({
                   send(input);
                 }
               }}
+              onPaste={onPaste}
               rows={1}
               name="scout-message"
               autoComplete="off"

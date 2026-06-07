@@ -36,7 +36,7 @@ function ScoutGlance({ glance }: { glance: Glance }) {
     <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-4 space-y-3">
       <div>
         <div className="text-sm text-neutral-500">{greeting()}, Selena.</div>
-        <div className="prose-chat text-[15px] leading-relaxed text-neutral-900 mt-1">
+        <div className="prose-chat text-[17px] leading-relaxed text-neutral-900 mt-1">
           {glance.opener}
         </div>
       </div>
@@ -46,7 +46,7 @@ function ScoutGlance({ glance }: { glance: Glance }) {
           <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 mb-1">
             Today
           </div>
-          <ul className="space-y-0.5 text-sm text-neutral-700">
+          <ul className="space-y-0.5 text-[15px] text-neutral-700">
             {glance.tasksDue > 0 && (
               <li>· {glance.tasksDue} task{glance.tasksDue !== 1 ? "s" : ""} due</li>
             )}
@@ -62,7 +62,7 @@ function ScoutGlance({ glance }: { glance: Glance }) {
           <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 mb-0.5">
             Scout noticed
           </div>
-          <div className="text-sm text-neutral-700">{glance.note}</div>
+          <div className="text-[15px] text-neutral-700">{glance.note}</div>
         </div>
       )}
     </div>
@@ -144,7 +144,7 @@ export default function ChatClient({
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`prose-chat max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+                className={`prose-chat max-w-[85%] rounded-2xl px-4 py-2.5 text-[17px] leading-relaxed ${
                   m.role === "user"
                     ? "bg-neutral-900 text-white rounded-br-sm"
                     : "bg-white border border-neutral-200 text-neutral-900 rounded-bl-sm"
@@ -198,13 +198,19 @@ export default function ChatClient({
                 }
               }}
               rows={1}
-              placeholder="Message your Chief of Staff…"
-              className="flex-1 resize-none rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900/10"
+              name="scout-message"
+              autoComplete="off"
+              autoCapitalize="sentences"
+              autoCorrect="on"
+              data-1p-ignore
+              data-lpignore="true"
+              placeholder="Chat with Scout"
+              className="flex-1 resize-none rounded-xl border border-neutral-300 px-3 py-2.5 text-[17px] focus:outline-none focus:ring-2 focus:ring-neutral-900/10"
             />
             <button
               type="submit"
               disabled={sending || !input.trim()}
-              className="rounded-xl bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
+              className="rounded-xl bg-neutral-900 px-4 py-2.5 text-[15px] text-white disabled:opacity-40"
             >
               Send
             </button>

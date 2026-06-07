@@ -927,7 +927,8 @@ export async function generateAIResponse(
   const messages: Anthropic.MessageParam[] = [...priorTurns, latest];
   const toolsUsed: string[] = [];
 
-  for (let i = 0; i < 6; i++) {
+  // Generous cap: cross-source synthesis can read many tools, then act + answer.
+  for (let i = 0; i < 12; i++) {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2048,

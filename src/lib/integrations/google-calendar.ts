@@ -39,6 +39,8 @@ async function getAccessToken(): Promise<string> {
   return j.access_token;
 }
 
+import { appTimeZone, startEndOfToday, formatTime } from "../dates";
+
 export type CalEvent = { title: string; start: string; end: string | null; allDay: boolean };
 
 type GoogleEvent = {
@@ -47,18 +49,17 @@ type GoogleEvent = {
   end?: { dateTime?: string; date?: string };
 };
 
-/** Today's events from the primary calendar (local day boundaries). */
+/** Today's events from the primary calendar, in the user's timezone. */
 export async function listTodaysEvents(): Promise<CalEvent[]> {
   if (!calendarEnabled()) return [];
   const token = await getAccessToken();
 
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  const { start, end } = startEndOfToday();
 
   const url = new URL(`${CAL_API}/calendars/primary/events`);
   url.searchParams.set("timeMin", start.toISOString());
   url.searchParams.set("timeMax", end.toISOString());
+  url.searchParams.set("timeZone", appTimeZone());
   url.searchParams.set("singleEvents", "true");
   url.searchParams.set("orderBy", "startTime");
 
@@ -85,11 +86,7 @@ export function formatEvents(events: CalEvent[]): string {
   return events
     .map((e) => {
       if (e.allDay) return `- (all day) ${e.title}`;
-      const t = new Date(e.start).toLocaleTimeString(undefined, {
-        hour: "numeric",
-        minute: "2-digit",
-      });
-      return `- ${t} ${e.title}`;
+      return `- ${formatTime(e.start)} ${e.title}`;
     })
     .join("\n");
 }

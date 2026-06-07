@@ -146,8 +146,22 @@ design keeps the **rule-based scoring engine as the auditable backbone**:
 
 See `src/lib/ai.ts`. No key? Everything still works via `src/lib/chat-engine.ts`.
 
+## Integrations
+
+| Integration | Status | Setup | Notes |
+| --- | --- | --- | --- |
+| AI (Claude) | ✅ wired | `ANTHROPIC_API_KEY` (+ `COS_AI_MODEL`) | Conversational Chief of Staff with fallback |
+| Todoist | ✅ wired | `TODOIST_API_TOKEN` | `npm run sync:todoist` imports tasks; AI reads live via `get_todoist_tasks` |
+| Google Calendar | ✅ wired | `npm run google:auth` (after `GOOGLE_CLIENT_ID`/`SECRET`) | Read-only; AI reads today's events via `get_calendar_today` |
+| Apple Reminders | ⬜ planned | — | No web API; needs a local Mac bridge |
+| Resend (email) | ⬜ planned | — | Email the daily briefing |
+
+Integration clients live in `src/lib/integrations/`. Tokens are environment variables only —
+never stored in the database or committed.
+
 ## Next recommended build step
 
-**Connect a real data source** — Google Calendar or Todoist — so the briefing can weigh actual
-time pressure and external tasks, not just what's entered by hand. The integrations data model
-and placeholder UI are already in place.
+**Let the calendar and Todoist feed the rule-based briefing score directly** (not just the AI
+context) — e.g. a packed calendar lowers how much a role can realistically get today, and
+overdue Todoist items tied to a role raise its attention score. The data is already flowing in;
+this wires it into `scoreRoles()`.

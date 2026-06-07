@@ -163,6 +163,9 @@ export const briefings = pgTable("briefings", {
   next15MinuteAction: text("next_15_minute_action"),
   safeToIgnore: text("safe_to_ignore"),
   avoidanceAlerts: text("avoidance_alerts"),
+  // Scout-voiced home-screen copy, cached so the home doesn't call the model per load.
+  scoutOpener: text("scout_opener"),
+  scoutNote: text("scout_note"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

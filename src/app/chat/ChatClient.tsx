@@ -8,6 +8,14 @@ type Msg = {
   content: string;
 };
 
+type Glance = {
+  opener: string;
+  note: string | null;
+  tasksDue: number;
+  events: string[];
+  focusRoleName: string | null;
+};
+
 const SUGGESTIONS = [
   "What's on tap today?",
   "I'm overwhelmed.",
@@ -15,12 +23,60 @@ const SUGGESTIONS = [
   "Why this?",
 ];
 
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+function ScoutGlance({ glance }: { glance: Glance }) {
+  const hasToday = glance.tasksDue > 0 || glance.events.length > 0;
+  return (
+    <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-4 space-y-3">
+      <div>
+        <div className="text-sm text-neutral-500">{greeting()}, Selena.</div>
+        <div className="prose-chat text-[15px] leading-relaxed text-neutral-900 mt-1">
+          {glance.opener}
+        </div>
+      </div>
+
+      {hasToday && (
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 mb-1">
+            Today
+          </div>
+          <ul className="space-y-0.5 text-sm text-neutral-700">
+            {glance.tasksDue > 0 && (
+              <li>· {glance.tasksDue} task{glance.tasksDue !== 1 ? "s" : ""} due</li>
+            )}
+            {glance.events.map((e, i) => (
+              <li key={i}>· {e}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {glance.note && (
+        <div className="rounded-xl bg-neutral-50 px-3 py-2.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 mb-0.5">
+            Scout noticed
+          </div>
+          <div className="text-sm text-neutral-700">{glance.note}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ChatClient({
   initialConversationId,
   initialMessages,
+  glance,
 }: {
   initialConversationId: string | null;
   initialMessages: Msg[];
+  glance: Glance | null;
 }) {
   const [conversationId, setConversationId] = useState<string | null>(initialConversationId);
   const [messages, setMessages] = useState<Msg[]>(initialMessages);
@@ -28,8 +84,15 @@ export default function ChatClient({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const landed = useRef(false);
 
   useEffect(() => {
+    // Land on the glance (top) on first open; only auto-scroll once the
+    // conversation is active so new replies stay in view.
+    if (!landed.current) {
+      landed.current = true;
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
@@ -81,12 +144,7 @@ export default function ChatClient({
 
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-2xl space-y-4">
-          {messages.length === 0 && (
-            <div className="text-center text-neutral-500 mt-10">
-              <p className="text-sm">No messages yet.</p>
-              <p className="text-sm">Start with “What’s on tap today?”</p>
-            </div>
-          )}
+          {glance && <ScoutGlance glance={glance} />}
           {messages.map((m) => (
             <div
               key={m.id}

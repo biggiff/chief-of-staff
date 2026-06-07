@@ -1,5 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
+import { getHomeGlance, type HomeGlance } from "@/lib/briefing";
 import ChatClient from "./ChatClient";
 
 export const dynamic = "force-dynamic";
@@ -21,10 +22,18 @@ export default async function ChatPage() {
     initialMessages = msgs.map((m) => ({ id: m.id, role: m.role, content: m.content }));
   }
 
+  let glance: HomeGlance | null = null;
+  try {
+    glance = await getHomeGlance();
+  } catch (err) {
+    console.error("home glance failed", err);
+  }
+
   return (
     <ChatClient
       initialConversationId={conv?.id ?? null}
       initialMessages={initialMessages}
+      glance={glance}
     />
   );
 }

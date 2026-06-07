@@ -1,4 +1,4 @@
-import { and, eq, isNull, desc, gte } from "drizzle-orm";
+import { and, eq, isNull, desc, gte, lte } from "drizzle-orm";
 import {
   db,
   roles as rolesTable,
@@ -12,7 +12,7 @@ import {
   type Briefing,
   type AttentionType,
 } from "@/db";
-import { daysSince, todayStr } from "./dates";
+import { daysSince, todayStr, startEndOfToday, formatTime } from "./dates";
 import {
   attentionWeightsForRole,
   recencyFactor,
@@ -411,6 +411,78 @@ export async function getOrCreateTodaysBriefing(): Promise<Briefing> {
     .limit(1);
   if (existing) return existing;
   return generateBriefing(today);
+}
+
+export type HomeGlance = {
+  opener: string;
+  note: string | null;
+  tasksDue: number;
+  events: string[];
+  focusRoleName: string | null;
+};
+
+/**
+ * The Concept-B home glance: Scout's voiced morning read (cached), a tiny
+ * "Today" (tasks due + calendar), and one observation. Falls back to plain
+ * rule-based text when no AI key is configured.
+ */
+export async function getHomeGlance(): Promise<HomeGlance> {
+  const briefing = await getOrCreateTodaysBriefing();
+
+  let focusRoleName: string | null = null;
+  if (briefing.focusRoleId) {
+    const [r] = await db.select().from(rolesTable).where(eq(rolesTable.id, briefing.focusRoleId)).limit(1);
+    focusRoleName = r?.name ?? null;
+  }
+
+  // Tasks due today (user's timezone).
+  const { start, end } = startEndOfToday();
+  const due = await db
+    .select()
+    .from(tasksTable)
+    .where(and(eq(tasksTable.status, "open"), gte(tasksTable.dueDate, start), lte(tasksTable.dueDate, end)));
+
+  // Today's calendar.
+  let events: string[] = [];
+  try {
+    const { calendarEnabled, listTodaysEvents } = await import("./integrations/google-calendar");
+    if (calendarEnabled()) {
+      events = (await listTodaysEvents()).map((e) =>
+        e.allDay ? e.title : `${formatTime(e.start)} ${e.title}`
+      );
+    }
+  } catch (err) {
+    console.error("home glance calendar failed", err);
+  }
+
+  // Voiced read + note (cached on the briefing row).
+  let opener = briefing.scoutOpener ?? null;
+  let note = briefing.scoutNote ?? null;
+  if (!opener) {
+    try {
+      const { aiEnabled, voiceMorningRead } = await import("./ai");
+      if (aiEnabled()) {
+        const voiced = await voiceMorningRead({
+          focusName: focusRoleName,
+          summary: briefing.summary,
+          whyThis: briefing.whyThis,
+          tasksDue: due.length,
+          events,
+        });
+        opener = voiced.read;
+        note = voiced.note || null;
+        await db
+          .update(briefingsTable)
+          .set({ scoutOpener: opener, scoutNote: note })
+          .where(eq(briefingsTable.id, briefing.id));
+      }
+    } catch (err) {
+      console.error("home glance voicing failed", err);
+    }
+  }
+  if (!opener) opener = briefing.summary ?? "Let's figure out today.";
+
+  return { opener, note, tasksDue: due.length, events, focusRoleName };
 }
 
 /** Render a briefing as a conversational message for the chat surface. */

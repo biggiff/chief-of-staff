@@ -427,6 +427,14 @@ export type HomeGlance = {
  * rule-based text when no AI key is configured.
  */
 export async function getHomeGlance(): Promise<HomeGlance> {
+  // Refresh the Todoist mirror if stale before computing the glance.
+  try {
+    const { syncTodoistIfStale } = await import("./integrations/todoist");
+    await syncTodoistIfStale();
+  } catch (err) {
+    console.error("stale-sync check failed", err);
+  }
+
   const briefing = await getOrCreateTodaysBriefing();
 
   let focusRoleName: string | null = null;

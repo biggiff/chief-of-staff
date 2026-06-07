@@ -112,6 +112,14 @@ async function focusRoleName(focusRoleId: string | null | undefined, roles: Role
 
 /** Snapshot of current Compass state for Scout's system prompt. */
 async function buildContext(): Promise<string> {
+  // Keep the Todoist task mirror fresh (throttled — at most once per 10 min).
+  try {
+    const { syncTodoistIfStale } = await import("./integrations/todoist");
+    await syncTodoistIfStale();
+  } catch (err) {
+    console.error("stale-sync check failed", err);
+  }
+
   const scored = await scoreRoles();
   const briefing = await getLatestBriefing();
 

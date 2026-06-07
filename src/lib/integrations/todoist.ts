@@ -257,6 +257,26 @@ export async function syncTodoist(): Promise<TodoistSyncResult> {
   }
 }
 
+/**
+ * Sync only if the mirror is stale (default: older than 10 min), so the Compass
+ * task mirror stays current without re-fetching Todoist on every interaction.
+ */
+export async function syncTodoistIfStale(maxAgeMinutes = 10): Promise<void> {
+  if (!todoistEnabled()) return;
+  const [row] = await db
+    .select()
+    .from(integrationsTable)
+    .where(eq(integrationsTable.provider, PROVIDER))
+    .limit(1);
+  const last = row?.lastSyncAt ? new Date(row.lastSyncAt).getTime() : 0;
+  if (Date.now() - last < maxAgeMinutes * 60 * 1000) return;
+  try {
+    await syncTodoist();
+  } catch (err) {
+    console.error("auto-sync failed", err);
+  }
+}
+
 async function upsertStatus(
   status: "connected" | "error" | "not_connected",
   lastSyncAt: Date | null,

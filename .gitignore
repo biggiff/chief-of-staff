@@ -32,3 +32,6 @@ next-env.d.ts
 
 # drizzle
 /drizzle/meta
+
+# local PGlite database (zero-setup dev)
+/.pglite

@@ -1,25 +1,41 @@
 import { neon } from "@neondatabase/serverless";
-import { drizzle, type NeonHttpDatabase } from "drizzle-orm/neon-http";
+import { drizzle as drizzleNeon, type NeonHttpDatabase } from "drizzle-orm/neon-http";
 import * as schema from "./schema";
 
 /**
- * Lazily-initialized Drizzle client.
+ * Lazily-initialized Drizzle client with two backends:
  *
- * We avoid creating the connection at module-import time so that `next build`
- * (which evaluates these modules without a database) doesn't crash. The
- * DATABASE_URL check happens on first actual use instead.
+ *  - **Neon (production / Vercel):** used when DATABASE_URL is a real
+ *    postgres:// connection string.
+ *  - **PGlite (zero-setup local dev):** Postgres compiled to WASM, stored in a
+ *    local `.pglite` folder. Used automatically when no DATABASE_URL is set, so
+ *    you can run the app with no external database at all.
+ *
+ * Initialization is deferred so `next build` (which evaluates these modules
+ * without a database) never crashes.
  */
 let _db: NeonHttpDatabase<typeof schema> | null = null;
 
+function isNeonUrl(url: string | undefined): url is string {
+  return !!url && /^postgres(ql)?:\/\//.test(url);
+}
+
 function getDb(): NeonHttpDatabase<typeof schema> {
   if (_db) return _db;
-  if (!process.env.DATABASE_URL) {
-    throw new Error(
-      "DATABASE_URL is not set. Copy .env.example to .env.local and add your Neon connection string."
-    );
+
+  const url = process.env.DATABASE_URL;
+  if (isNeonUrl(url)) {
+    _db = drizzleNeon(neon(url), { schema });
+    return _db;
   }
-  const sql = neon(process.env.DATABASE_URL);
-  _db = drizzle(sql, { schema });
+
+  // Local fallback: Postgres-in-WASM. Required deps loaded only on this path.
+
+  const { PGlite } = require("@electric-sql/pglite");
+
+  const { drizzle: drizzlePglite } = require("drizzle-orm/pglite");
+  const dir = process.env.PGLITE_DIR || ".pglite";
+  _db = drizzlePglite(new PGlite(dir), { schema }) as unknown as NeonHttpDatabase<typeof schema>;
   return _db;
 }
 

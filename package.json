@@ -13,6 +13,7 @@
     "db:seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.2.17",
     "@neondatabase/serverless": "^0.10.4",
     "drizzle-orm": "^0.38.3",
     "eslint-config-next": "^15.5.19",

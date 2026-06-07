@@ -100,20 +100,31 @@ async function buildContext(): Promise<string> {
     }
   }
 
-  // Unassigned open tasks (e.g. freshly synced from Todoist, no role yet).
+  // Unassigned open tasks (e.g. synced from Todoist, no role yet), grouped by project.
   const unassigned = await db
     .select()
     .from(tasksTable)
     .where(and(isNull(tasksTable.roleId), eq(tasksTable.status, "open")));
   if (unassigned.length) {
-    lines.push("");
-    lines.push(`Unassigned open tasks (${unassigned.length}) — not yet tied to a role:`);
-    for (const t of unassigned.slice(0, 12)) {
-      const src = t.source ? ` [${t.source}]` : "";
-      const due = t.dueDate ? ` (due ${formatDate(t.dueDate)})` : "";
-      lines.push(`- ${t.title}${due} priority=${t.priority}${src}`);
+    const projRows = await db.select().from(projectsTable);
+    const projName = new Map(projRows.map((p) => [p.id, p.name]));
+    const groups = new Map<string, typeof unassigned>();
+    for (const t of unassigned) {
+      const key = t.projectId ? projName.get(t.projectId) ?? "Other" : "No list";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(t);
     }
-    lines.push("If the user implies which role one belongs to, you can re-file it with create_task or suggest a role.");
+    lines.push("");
+    lines.push(`Unassigned open tasks (${unassigned.length}) — not tied to a role yet, grouped by list/project:`);
+    for (const [group, items] of groups) {
+      lines.push(`  ${group} (${items.length}):`);
+      for (const t of items.slice(0, 8)) {
+        const due = t.dueDate ? ` (due ${formatDate(t.dueDate)})` : "";
+        lines.push(`    - ${t.title}${due} priority=${t.priority}`);
+      }
+      if (items.length > 8) lines.push(`    …and ${items.length - 8} more`);
+    }
+    lines.push("If the user implies which role a list belongs to, suggest filing the whole list under it.");
   }
 
   // Today's calendar — real time pressure for the briefing.

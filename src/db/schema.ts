@@ -67,6 +67,9 @@ export const projects = pgTable("projects", {
   energyRequired: text("energy_required").$type<EnergyLevel>().notNull().default("medium"),
   deadline: timestamp("deadline", { withTimezone: true }),
   lastMeaningfulProgressAt: timestamp("last_meaningful_progress_at", { withTimezone: true }),
+  // Provenance for synced projects (e.g. "todoist"). Null = created in-app.
+  source: text("source"),
+  externalId: text("external_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

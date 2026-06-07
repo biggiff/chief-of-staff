@@ -90,6 +90,8 @@ No duplicate tasks: when create_task reports duplicateFound, do NOT create anoth
 
 Email (Gmail): you can read her mail across all folders (search_emails uses Gmail search syntax — use "in:anywhere" to include all folders/spam/trash, plus operators like from:, subject:, is:unread, newer_than:7d, label:), open a specific message (read_email), and create drafts (create_email_draft). SENDING is different: NEVER call send_email without her explicit go-ahead in the conversation. Default to writing the draft and asking "Want me to send it?" — only send_email after she clearly says yes. Summarize, don't dump raw headers.
 
+Email labels = life areas. She labels forwarded mail by which part of her life it's from (e.g. Bakery, PTO, Founder). search_emails and read_email return each email's labels — surface them and use them to route/group ("3 unread under PTO"). To filter by one, search with label:"Name" (use list_email_labels if you need the exact names).
+
 Trust: confirm briefly what changed; don't over-explain unless she asks why. Every action is undoable ("undo that").
 
 CRITICAL: act ONLY on her most recent message. Earlier messages are context already handled — never re-log, re-create, or repeat a prior turn's write. If the latest message doesn't call for a write, don't make one.
@@ -308,8 +310,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "read_email",
-    description: "Read the full body of one email by id (from search_emails).",
+    description: "Read the full body of one email by id (from search_emails). Returns its labels too.",
     input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "list_email_labels",
+    description: "List the user's Gmail labels (her life-area tags). Use to get exact names before filtering with label:.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "create_email_draft",
@@ -515,6 +522,16 @@ async function runTool(
     if (!calendarEnabled()) return j({ ok: false, error: "Google Calendar not connected." });
     const events = await listTodaysEvents();
     return j({ ok: true, count: events.length, summary: formatEvents(events) });
+  }
+
+  if (name === "list_email_labels") {
+    const gmail = await import("./integrations/gmail");
+    if (!gmail.gmailConfigured()) return j({ ok: false, error: "Gmail not connected." });
+    try {
+      return j({ ok: true, labels: await gmail.listLabels() });
+    } catch (err) {
+      return j({ ok: false, error: err instanceof Error ? err.message : "Gmail error" });
+    }
   }
 
   if (name === "search_emails" || name === "read_email" || name === "create_email_draft" || name === "send_email") {

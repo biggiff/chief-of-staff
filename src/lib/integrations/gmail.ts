@@ -44,7 +44,35 @@ function headerVal(headers: { name: string; value: string }[] | undefined, name:
   return headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 
-export type EmailSummary = { id: string; from: string; subject: string; date: string; snippet: string };
+/** Map of user-created label id → name (e.g. "Label_42" → "Bakery"). */
+async function getUserLabelMap(token: string): Promise<Map<string, string>> {
+  const res = await fetch(`${API}/labels`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  if (!res.ok) return new Map();
+  const data = (await res.json()) as { labels?: { id: string; name: string; type: string }[] };
+  const m = new Map<string, string>();
+  for (const l of data.labels ?? []) if (l.type === "user") m.set(l.id, l.name);
+  return m;
+}
+
+function namedLabels(labelIds: string[] | undefined, map: Map<string, string>): string[] {
+  return (labelIds ?? []).map((id) => map.get(id)).filter((n): n is string => !!n);
+}
+
+export type EmailSummary = {
+  id: string;
+  from: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  labels: string[];
+};
+
+/** List the user's Gmail labels (the life-area tags). */
+export async function listLabels(): Promise<string[]> {
+  const token = await getAccessToken();
+  const map = await getUserLabelMap(token);
+  return [...map.values()].sort();
+}
 
 /**
  * Search/list emails. `query` uses Gmail search syntax (e.g. "from:mom",
@@ -64,6 +92,8 @@ export async function listEmails(query = "", max = 15): Promise<EmailSummary[]> 
   const data = (await res.json()) as { messages?: { id: string }[] };
   const ids = (data.messages ?? []).map((m) => m.id);
 
+  const labelMap = await getUserLabelMap(token);
+
   const summaries = await Promise.all(
     ids.map(async (id) => {
       const mUrl = new URL(`${API}/messages/${id}`);
@@ -72,6 +102,7 @@ export async function listEmails(query = "", max = 15): Promise<EmailSummary[]> 
       const mRes = await fetch(mUrl, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
       const msg = (await mRes.json()) as {
         snippet?: string;
+        labelIds?: string[];
         payload?: { headers?: { name: string; value: string }[] };
       };
       return {
@@ -80,6 +111,7 @@ export async function listEmails(query = "", max = 15): Promise<EmailSummary[]> 
         subject: headerVal(msg.payload?.headers, "Subject") || "(no subject)",
         date: headerVal(msg.payload?.headers, "Date"),
         snippet: msg.snippet ?? "",
+        labels: namedLabels(msg.labelIds, labelMap),
       };
     })
   );
@@ -108,17 +140,20 @@ function extractText(part: Part | undefined): string {
   return "";
 }
 
-export async function readEmail(id: string): Promise<{ from: string; subject: string; date: string; body: string }> {
+export async function readEmail(
+  id: string
+): Promise<{ from: string; subject: string; date: string; labels: string[]; body: string }> {
   const token = await getAccessToken();
-  const res = await fetch(`${API}/messages/${id}?format=full`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
+  const [res, labelMap] = await Promise.all([
+    fetch(`${API}/messages/${id}?format=full`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }),
+    getUserLabelMap(token),
+  ]);
   if (!res.ok) {
     const t = await res.text().catch(() => "");
     throw new Error(`Gmail read ${res.status}: ${t.slice(0, 200)}`);
   }
   const msg = (await res.json()) as {
+    labelIds?: string[];
     payload?: Part & { headers?: { name: string; value: string }[] };
   };
   const body = extractText(msg.payload).slice(0, 4000);
@@ -126,6 +161,7 @@ export async function readEmail(id: string): Promise<{ from: string; subject: st
     from: headerVal(msg.payload?.headers, "From"),
     subject: headerVal(msg.payload?.headers, "Subject") || "(no subject)",
     date: headerVal(msg.payload?.headers, "Date"),
+    labels: namedLabels(msg.labelIds, labelMap),
     body,
   };
 }

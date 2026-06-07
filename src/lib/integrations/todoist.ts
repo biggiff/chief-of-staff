@@ -11,7 +11,7 @@ import { db, tasks as tasksTable, integrations as integrationsTable, type Priori
  */
 
 const PROVIDER = "Todoist";
-const API = "https://api.todoist.com/rest/v2";
+const API = "https://api.todoist.com/api/v1";
 
 export function todoistToken(): string | null {
   return process.env.TODOIST_API_TOKEN || null;
@@ -27,7 +27,8 @@ type TodoistTask = {
   description?: string;
   priority: number; // 1 (normal) … 4 (urgent)
   due?: { date?: string; datetime?: string } | null;
-  is_completed?: boolean;
+  checked?: boolean;
+  is_deleted?: boolean;
 };
 
 // Todoist priority 4 (urgent) → high; 3 → high; 2 → medium; 1 → low.
@@ -42,16 +43,29 @@ function dueToDate(t: TodoistTask): Date | null {
   return raw ? new Date(raw) : null;
 }
 
+// Todoist API v1: GET /tasks returns { results, next_cursor } and is paginated.
 async function fetchActiveTasks(token: string): Promise<TodoistTask[]> {
-  const res = await fetch(`${API}/tasks`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Todoist API ${res.status}: ${body.slice(0, 200)}`);
-  }
-  return (await res.json()) as TodoistTask[];
+  const all: TodoistTask[] = [];
+  let cursor: string | null = null;
+  do {
+    const url = new URL(`${API}/tasks`);
+    url.searchParams.set("limit", "200");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const res: Response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Todoist API ${res.status}: ${body.slice(0, 200)}`);
+    }
+    const page = (await res.json()) as { results: TodoistTask[]; next_cursor: string | null };
+    all.push(...page.results);
+    cursor = page.next_cursor;
+  } while (cursor);
+
+  // Active = not completed and not deleted.
+  return all.filter((t) => !t.checked && !t.is_deleted);
 }
 
 export type TodoistSyncResult = {

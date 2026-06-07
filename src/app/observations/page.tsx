@@ -34,7 +34,9 @@ export default async function ObservationsPage() {
                 <div className="text-sm font-medium">{o.summary}</div>
                 {o.roleId && <div className="text-xs text-neutral-500">{roleName.get(o.roleId)}</div>}
                 {o.detail && <p className="text-sm text-neutral-600 mt-1">{o.detail}</p>}
-                <div className="text-xs text-neutral-400 mt-1">{formatDate(o.createdAt)}</div>
+                <div className="text-xs text-neutral-400 mt-1">
+                  {o.source === "engine" ? "Scout noticed automatically" : o.source === "chat" ? "from chat" : "added manually"} · {formatDate(o.createdAt)}
+                </div>
               </div>
               <Badge value={o.severity} />
             </div>

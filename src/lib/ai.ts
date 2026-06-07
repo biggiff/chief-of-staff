@@ -411,6 +411,11 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { query: { type: "string" } } },
   },
   {
+    name: "scan_for_observations",
+    description: "Run a cross-source pattern scan now and record any genuinely meaningful new observations (quality over quantity — often finds nothing new, which is fine). Use when she asks you to look for patterns / what you're noticing.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "get_activity",
     description: "Read/search the activity log — what you've changed recently (with timestamps and whether undone). Use for 'what did you do?' / 'what changed today?'",
     input_schema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } } },
@@ -746,6 +751,13 @@ async function runTool(
 
   if (name === "get_observations") {
     return j({ ok: true, observations: await listObservations(input.query as string | undefined) });
+  }
+
+  if (name === "scan_for_observations") {
+    const { runObservationPass } = await import("./observation-engine");
+    const res = await runObservationPass({ force: true });
+    const observations = await listObservations();
+    return j({ ok: true, ...res, observations });
   }
 
   if (name === "get_activity") {

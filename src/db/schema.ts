@@ -259,6 +259,7 @@ export const insights = pgTable("insights", {
   summary: text("summary").notNull(),
   detail: text("detail"),
   severity: text("severity").notNull().default("info"), // info | notice | concern
+  source: text("source").notNull().default("manual"), // manual | chat | engine
   status: text("status").$type<InsightStatus>().notNull().default("open"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

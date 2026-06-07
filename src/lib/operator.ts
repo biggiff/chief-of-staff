@@ -406,6 +406,13 @@ export async function saveCheckin(input: {
     undoPayload: { checkinId: checkin.id },
     conversationId: input.conversationId,
   });
+  // A check-in is a strong signal — let the Observation Engine take a look (throttled).
+  try {
+    const { runObservationPass } = await import("./observation-engine");
+    await runObservationPass();
+  } catch (err) {
+    console.error("observation pass failed", err);
+  }
   return { checkin, summary };
 }
 

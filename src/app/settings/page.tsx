@@ -13,7 +13,10 @@ export default function SettingsPage() {
         <div>
           <div className="text-sm font-medium">AI responses</div>
           <div className="text-sm text-neutral-500">
-            Chat is rule-based for now. An AI provider can be added under Integrations.
+            Set <code className="text-xs">ANTHROPIC_API_KEY</code> to enable the real AI Chief of
+            Staff (Claude). Without it, chat uses the deterministic rule-based engine. Optionally set{" "}
+            <code className="text-xs">COS_AI_MODEL</code> (defaults to <code className="text-xs">claude-opus-4-8</code>).
+            The rule-based scoring engine stays the backbone either way.
           </div>
         </div>
         <div>

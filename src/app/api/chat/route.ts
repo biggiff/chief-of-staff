@@ -29,6 +29,14 @@ export async function POST(req: NextRequest) {
         .where(eq(conversations.id, conversationId));
     }
 
+    // Load recent history (before inserting the new message) for AI context.
+    const priorMessages = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+      .orderBy(messages.createdAt);
+    const history = priorMessages.map((m) => ({ role: m.role, content: m.content }));
+
     // Save the user message.
     const [userMsg] = await db
       .insert(messages)
@@ -36,7 +44,7 @@ export async function POST(req: NextRequest) {
       .returning();
 
     // Generate + save the Chief of Staff response.
-    const reply = await generateChiefResponse(content);
+    const reply = await generateChiefResponse(content, history);
     const [chiefMsg] = await db
       .insert(messages)
       .values({

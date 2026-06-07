@@ -131,11 +131,23 @@ score** from independent, labeled signals:
 The highest score becomes the day's focus. Because each contribution carries a human-readable
 label, the recommendation is fully explainable — that's what powers "why?".
 
+## AI layer (Claude)
+
+The chat uses a real AI Chief of Staff (Anthropic Claude) when `ANTHROPIC_API_KEY` is set, and
+falls back to the deterministic rule-based engine otherwise (or if the API call errors). The
+design keeps the **rule-based scoring engine as the auditable backbone**:
+
+- The model receives the *current structured state* (roles, attention scores, latest briefing)
+  in its system prompt — it interprets, it doesn't invent facts.
+- All state changes go through deterministic tools (`get_or_generate_briefing`, `create_task`,
+  `create_idea`, `record_role_pushback`) — never free-form writes.
+- Uses `claude-opus-4-8` by default (adaptive thinking); override with `COS_AI_MODEL`
+  (e.g. `claude-sonnet-4-6` or `claude-haiku-4-5`) for lower cost/latency.
+
+See `src/lib/ai.ts`. No key? Everything still works via `src/lib/chat-engine.ts`.
+
 ## Next recommended build step
 
-**Add a real AI layer behind the chat** while keeping the rule-based engine as the structured
-backbone. Concretely: introduce an AI provider integration that takes the user's message *plus*
-the current role/briefing context (the structured memory you already have) and produces the
-reply — falling back to the rule-based engine when no key is configured. This upgrades the
-conversation quality without losing the auditable scoring that makes the recommendations
-trustworthy.
+**Connect a real data source** — Google Calendar or Todoist — so the briefing can weigh actual
+time pressure and external tasks, not just what's entered by hand. The integrations data model
+and placeholder UI are already in place.

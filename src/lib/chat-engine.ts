@@ -88,7 +88,34 @@ function isPushback(t: string): boolean {
 
 /* ------------------------------- Engine --------------------------------- */
 
-export async function generateChiefResponse(userText: string): Promise<ChiefResponse> {
+/**
+ * Top-level entry point. Uses the real AI layer when an API key is configured,
+ * and falls back to the deterministic rule-based engine otherwise (or if the
+ * AI call errors). Either way the briefing/scoring engine is the backbone.
+ */
+export async function generateChiefResponse(
+  userText: string,
+  history: { role: "user" | "chief_of_staff" | "system"; content: string }[] = []
+): Promise<ChiefResponse> {
+  const { aiEnabled, generateAIResponse } = await import("./ai");
+  if (aiEnabled()) {
+    try {
+      return await generateAIResponse(userText, history);
+    } catch (err) {
+      console.error("AI layer failed, falling back to rules:", err);
+      const fallback = await generateRuleBasedResponse(userText);
+      return {
+        content: fallback.content,
+        metadata: { ...fallback.metadata, engine: "rules", aiFallback: true },
+      };
+    }
+  }
+  const res = await generateRuleBasedResponse(userText);
+  return { content: res.content, metadata: { ...res.metadata, engine: "rules" } };
+}
+
+/** Deterministic, no-AI response logic. Always available; used as the fallback. */
+export async function generateRuleBasedResponse(userText: string): Promise<ChiefResponse> {
   const text = userText.trim();
   const roles = await activeRoles();
 

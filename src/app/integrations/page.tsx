@@ -1,6 +1,7 @@
 import { db, integrations } from "@/db";
 import { PageShell, Card, Badge, PrimaryButton } from "@/components/ui";
 import { todoistEnabled } from "@/lib/integrations/todoist";
+import { calendarEnabled, googleConfigured } from "@/lib/integrations/google-calendar";
 import { syncTodoistAction } from "@/app/actions";
 import { formatDate } from "@/lib/dates";
 
@@ -25,9 +26,14 @@ export default async function IntegrationsPage() {
         {PLANNED.map((p) => {
           const row = rowFor(p.provider);
           const isTodoist = p.provider === "Todoist";
+          const isCalendar = p.provider === "Google Calendar";
           const isAI = p.provider === "AI Provider";
           const status = isAI
             ? aiOn
+              ? "connected"
+              : "not_connected"
+            : isCalendar
+            ? calendarEnabled()
               ? "connected"
               : "not_connected"
             : isTodoist && todoistEnabled()
@@ -68,6 +74,30 @@ export default async function IntegrationsPage() {
                       <div>
                         2. Add <span className="font-mono">TODOIST_API_TOKEN=…</span> to <span className="font-mono">.env.local</span> (and to Vercel env vars for production), then restart.
                       </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {isCalendar && !calendarEnabled() && (
+                <div className="mt-3 text-xs text-neutral-600 bg-neutral-50 rounded-lg p-3 space-y-1">
+                  <div className="font-medium text-neutral-800">To connect Google Calendar:</div>
+                  <div>
+                    1. Create an OAuth client in Google Cloud Console (Desktop app) with the
+                    Calendar API enabled.
+                  </div>
+                  <div>
+                    2. Add <span className="font-mono">GOOGLE_CLIENT_ID</span> and{" "}
+                    <span className="font-mono">GOOGLE_CLIENT_SECRET</span> to{" "}
+                    <span className="font-mono">.env.local</span>.
+                  </div>
+                  <div>
+                    3. Run <span className="font-mono">npm run google:auth</span> and approve access —
+                    it saves your refresh token automatically.
+                  </div>
+                  {googleConfigured() && (
+                    <div className="text-amber-700">
+                      Client configured — just run <span className="font-mono">npm run google:auth</span> to finish.
                     </div>
                   )}
                 </div>

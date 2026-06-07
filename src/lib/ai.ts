@@ -116,6 +116,21 @@ async function buildContext(): Promise<string> {
     lines.push("If the user implies which role one belongs to, you can re-file it with create_task or suggest a role.");
   }
 
+  // Today's calendar — real time pressure for the briefing.
+  try {
+    const { calendarEnabled, listTodaysEvents, formatEvents } = await import(
+      "./integrations/google-calendar"
+    );
+    if (calendarEnabled()) {
+      const events = await listTodaysEvents();
+      lines.push("");
+      lines.push(`Today's calendar (${events.length} event${events.length === 1 ? "" : "s"}):`);
+      lines.push(formatEvents(events));
+    }
+  } catch (err) {
+    console.error("calendar context failed:", err);
+  }
+
   if (briefing) {
     lines.push("");
     lines.push(`Latest briefing (${formatDate(briefing.briefingDate)}):`);
@@ -174,6 +189,12 @@ const TOOLS: Anthropic.Tool[] = [
     name: "get_todoist_tasks",
     description:
       "Fetch the user's current active Todoist tasks live (read-only). Use when they ask what's on their Todoist / actual to-do list, or to ground a recommendation in real tasks.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_calendar_today",
+    description:
+      "Fetch today's Google Calendar events (read-only). Use to ground the day in real time pressure — e.g. when the user asks what their day looks like or whether they have time for something.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -252,6 +273,17 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<st
     }
     const items = await listTodoistTasks();
     return JSON.stringify({ ok: true, count: items.length, tasks: items });
+  }
+
+  if (name === "get_calendar_today") {
+    const { calendarEnabled, listTodaysEvents, formatEvents } = await import(
+      "./integrations/google-calendar"
+    );
+    if (!calendarEnabled()) {
+      return JSON.stringify({ ok: false, error: "Google Calendar not connected." });
+    }
+    const events = await listTodaysEvents();
+    return JSON.stringify({ ok: true, count: events.length, summary: formatEvents(events) });
   }
 
   if (name === "record_role_pushback") {

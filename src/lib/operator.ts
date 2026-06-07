@@ -19,6 +19,7 @@ import {
   reopenTodoistTask,
   deleteTodoistTask,
 } from "./integrations/todoist";
+import { formatDate, formatTime } from "./dates";
 
 /**
  * Compass operator layer.
@@ -144,6 +145,17 @@ export async function createTask(input: {
     priority: input.priority,
     dueString: input.dueString,
   });
+
+  // Capture the resolved due date/time from Todoist's response.
+  const dueRaw = created.due?.datetime || created.due?.date || null;
+  const hasTime = !!created.due?.datetime;
+  const dueDate = dueRaw ? new Date(dueRaw) : null;
+  const dueLabel = dueDate
+    ? hasTime
+      ? `${formatDate(dueDate)} at ${formatTime(dueDate)}`
+      : formatDate(dueDate)
+    : null;
+
   const [task] = await db
     .insert(tasksTable)
     .values({
@@ -152,13 +164,14 @@ export async function createTask(input: {
       projectId: input.projectId ?? null,
       priority: input.priority ?? "medium",
       status: "open",
+      dueDate,
       source: "todoist",
       externalId: created.id,
       todoistProjectId: created.project_id ?? null,
     })
     .returning();
 
-  const summary = `Created task "${input.title}" in Todoist${input.role ? ` (${input.role.name})` : ""}`;
+  const summary = `Created task "${input.title}" in Todoist${dueLabel ? ` for ${dueLabel}` : ""}${input.role ? ` (${input.role.name})` : ""}`;
   await logActivity({
     actionKind: "create_task",
     summary,
@@ -167,7 +180,7 @@ export async function createTask(input: {
     undoPayload: { taskId: task.id, todoistId: created.id },
     conversationId: input.conversationId,
   });
-  return { task, summary };
+  return { task, summary, dueLabel };
 }
 
 export async function completeTask(input: { task: typeof tasksTable.$inferSelect; conversationId?: string | null }) {
@@ -217,6 +230,55 @@ export async function createIdea(input: {
     conversationId: input.conversationId,
   });
   return { idea, summary };
+}
+
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Find existing ideas (active + archived) similar to a title. */
+export async function findSimilarIdeas(title: string) {
+  const all = await db.select().from(ideasTable);
+  const q = normalizeText(title);
+  const qWords = q.split(" ").filter(Boolean);
+  return all
+    .map((idea) => {
+      const t = normalizeText(idea.title);
+      let score = 0;
+      if (t === q) score = 100;
+      else if (t.includes(q) || q.includes(t)) score = 85;
+      else {
+        const tw = new Set(t.split(" ").filter(Boolean));
+        const overlap = qWords.filter((w) => tw.has(w)).length;
+        score = (overlap / Math.max(qWords.length, 1)) * 70;
+      }
+      return { idea, score };
+    })
+    .filter((x) => x.score >= 55)
+    .sort((a, b) => b.score - a.score);
+}
+
+export async function appendIdeaNote(input: {
+  ideaQuery: string;
+  note: string;
+  conversationId?: string | null;
+}) {
+  // Resolve by closest title match.
+  const matches = await findSimilarIdeas(input.ideaQuery);
+  const idea = matches[0]?.idea;
+  if (!idea) return { ok: false, summary: "Couldn't find that idea." };
+  const newNotes = [idea.notes, input.note].filter(Boolean).join("\n");
+  await db.update(ideasTable).set({ notes: newNotes, updatedAt: new Date() }).where(eq(ideasTable.id, idea.id));
+  const summary = `Added a note to idea "${idea.title}"`;
+  await logActivity({
+    actionKind: "append_idea_note",
+    summary,
+    entityTable: "ideas",
+    entityId: idea.id,
+    undoPayload: { ideaId: idea.id, prevNotes: idea.notes },
+    conversationId: input.conversationId,
+  });
+  return { ok: true, summary };
 }
 
 export async function reassign(input: {
@@ -359,6 +421,12 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         break;
       case "create_idea":
         await db.delete(ideasTable).where(eq(ideasTable.id, p.ideaId as string));
+        break;
+      case "append_idea_note":
+        await db
+          .update(ideasTable)
+          .set({ notes: (p.prevNotes as string) ?? null, updatedAt: new Date() })
+          .where(eq(ideasTable.id, p.ideaId as string));
         break;
       case "reassign": {
         const isTask = p.entityTable === "tasks";

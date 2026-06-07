@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { db, roles } from "@/db";
-import { PageShell, Card, PrimaryButton } from "@/components/ui";
+import { PageShell, Card } from "@/components/ui";
 import { getLatestBriefing } from "@/lib/briefing";
-import { generateBriefingAction } from "@/app/actions";
-import { formatDate } from "@/lib/dates";
+import { formatDate, formatTime } from "@/lib/dates";
+import GenerateButton from "./GenerateButton";
 
 export const dynamic = "force-dynamic";
 
@@ -27,19 +27,18 @@ export default async function BriefingPage() {
 
   return (
     <PageShell
-      title="Daily briefing"
-      subtitle="Rule-based. Auditable. One focus, with the reasoning."
-      actions={
-        <form action={generateBriefingAction}>
-          <PrimaryButton>Generate today’s briefing</PrimaryButton>
-        </form>
-      }
+      title="Briefings"
+      subtitle="Scout's read on where your attention should go today, from Compass. Refresh anytime."
+      actions={<GenerateButton />}
     >
       {!b && <p className="text-sm text-neutral-500">No briefing yet. Generate one above.</p>}
       {b && (
         <Card className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="text-sm text-neutral-500">{formatDate(b.briefingDate)}</div>
+            <div className="text-sm text-neutral-500">
+              {formatDate(b.briefingDate)}
+              <span className="text-neutral-400"> · generated {formatTime(b.createdAt)}</span>
+            </div>
             {focusName && (
               <div className="text-sm">
                 Focus: <span className="font-semibold">{focusName}</span>

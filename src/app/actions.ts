@@ -14,6 +14,7 @@ import {
   roleAttentionEvents,
   proposedUpdates,
   insights,
+  briefings,
 } from "@/db";
 import { generateBriefing } from "@/lib/briefing";
 import { todayStr } from "@/lib/dates";
@@ -338,7 +339,10 @@ export async function createCheckin(fd: FormData) {
 /* ------------------------------ Briefing ------------------------------ */
 
 export async function generateBriefingAction() {
-  await generateBriefing();
+  // Refresh today's briefing (clear + regenerate) so it stays singular/current.
+  const today = todayStr();
+  await db.delete(briefings).where(eq(briefings.briefingDate, today));
+  await generateBriefing(today);
   revalidatePath("/briefing");
   revalidatePath("/dashboard");
 }

@@ -25,6 +25,8 @@ import {
   createTask,
   completeTask,
   createIdea,
+  findSimilarIdeas,
+  appendIdeaNote,
   reassign,
   recordPushback,
   saveCheckin,
@@ -61,6 +63,10 @@ You maintain Compass with tools. Apply this confidence policy strictly:
 Attention types (pick the best fit): focused_work, progress (built/shipped something), planning, thinking, relationship, maintenance, rest. "Built/worked on X" = progress or focused_work; "thought about X" = thinking; "date night / good talk with [partner]" = relationship; "cleaned / laundry / errands" = maintenance.
 
 Tasks live in Todoist (the source of truth) — create_task and complete_task go through Todoist. For complete_task, pass the user's wording as the query; if the match is unclear, ask which one.
+
+Reminders / timed tasks: you CAN set due dates AND times via create_task's due_string (natural language like "today at 3pm", "tomorrow morning", "Friday at 10am"). Use it whenever the user asks to be reminded at a time. Confirm exactly what was scheduled, e.g. "Done. I added 'call the orthodontist' to Todoist for today at 3:00 PM." Todoist handles the actual reminder — don't claim a push notification beyond what Todoist does; just confirm the due date/time. If the date/time is ambiguous, ask ONE short clarification before creating.
+
+Idea de-duplication: when you call create_idea, the result may report duplicateFound with an existing idea. If so, do NOT create a duplicate — ask the user: "I found a similar idea already: '<title>'. Add this as a note to it, or create a new idea?" If they want a note → add_idea_note; if they want a new one → call create_idea again with force=true.
 
 Trust rules: confirm briefly what changed; do NOT over-explain unless the user asks "why". Don't ask permission for obvious high-confidence actions. Every action is undoable ("undo that").
 
@@ -186,11 +192,25 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_idea",
-    description: "Capture an idea for later. Nothing demands action.",
+    description: "Capture an idea for later. The result may report a likely duplicate (duplicateFound) — if so, ask the user before creating. Pass force=true only after they confirm they want a new one.",
     input_schema: {
       type: "object",
-      properties: { title: { type: "string" }, role_name: { type: "string" }, notes: { type: "string" } },
+      properties: {
+        title: { type: "string" },
+        role_name: { type: "string" },
+        notes: { type: "string" },
+        force: { type: "boolean", description: "Create even if a similar idea exists (only after the user confirms)." },
+      },
       required: ["title"],
+    },
+  },
+  {
+    name: "add_idea_note",
+    description: "Append a note to an existing idea (e.g. when the user wants to add to a duplicate rather than create a new one). Pass the existing idea's title/wording as idea_query.",
+    input_schema: {
+      type: "object",
+      properties: { idea_query: { type: "string" }, note: { type: "string" } },
+      required: ["idea_query", "note"],
     },
   },
   {
@@ -318,6 +338,16 @@ async function runTool(
   }
 
   if (name === "create_idea") {
+    if (input.force !== true) {
+      const similar = await findSimilarIdeas(input.title as string);
+      if (similar.length && similar[0].score >= 70) {
+        return j({
+          ok: false,
+          duplicateFound: true,
+          existing: { title: similar[0].idea.title, status: similar[0].idea.status },
+        });
+      }
+    }
     const role = matchRole(input.role_name as string | undefined, roles);
     const { summary } = await createIdea({
       title: input.title as string,
@@ -326,6 +356,15 @@ async function runTool(
       conversationId,
     });
     return j({ ok: true, summary });
+  }
+
+  if (name === "add_idea_note") {
+    const res = await appendIdeaNote({
+      ideaQuery: input.idea_query as string,
+      note: input.note as string,
+      conversationId,
+    });
+    return j(res);
   }
 
   if (name === "reassign") {

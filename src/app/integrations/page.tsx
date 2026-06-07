@@ -2,6 +2,7 @@ import { db, integrations } from "@/db";
 import { PageShell, Card, Badge, PrimaryButton } from "@/components/ui";
 import { todoistEnabled } from "@/lib/integrations/todoist";
 import { calendarEnabled, googleConfigured } from "@/lib/integrations/google-calendar";
+import { gmailConfigured } from "@/lib/integrations/gmail";
 import { syncTodoistAction } from "@/app/actions";
 import { formatDate } from "@/lib/dates";
 
@@ -10,6 +11,7 @@ export const dynamic = "force-dynamic";
 const PLANNED = [
   { provider: "Todoist", note: "Pull your real tasks in so the briefing weighs actual to-dos." },
   { provider: "Google Calendar", note: "Pull events to weigh time pressure into briefings." },
+  { provider: "Gmail", note: "Read mail (all folders), draft, and send (with your okay)." },
   { provider: "Apple Reminders", note: "Capture quick tasks from anywhere." },
   { provider: "Resend", note: "Email the daily briefing." },
   { provider: "AI Provider", note: "Conversational Chief of Staff (Claude)." },
@@ -27,6 +29,7 @@ export default async function IntegrationsPage() {
           const row = rowFor(p.provider);
           const isTodoist = p.provider === "Todoist";
           const isCalendar = p.provider === "Google Calendar";
+          const isGmail = p.provider === "Gmail";
           const isAI = p.provider === "AI Provider";
           const status = isAI
             ? aiOn
@@ -34,6 +37,10 @@ export default async function IntegrationsPage() {
               : "not_connected"
             : isCalendar
             ? calendarEnabled()
+              ? "connected"
+              : "not_connected"
+            : isGmail
+            ? gmailConfigured()
               ? "connected"
               : "not_connected"
             : isTodoist && todoistEnabled()
@@ -100,6 +107,22 @@ export default async function IntegrationsPage() {
                       Client configured — just run <span className="font-mono">npm run google:auth</span> to finish.
                     </div>
                   )}
+                </div>
+              )}
+
+              {isGmail && (
+                <div className="mt-3 text-xs text-neutral-600 bg-neutral-50 rounded-lg p-3 space-y-1">
+                  <div className="font-medium text-neutral-800">Gmail uses the same Google sign-in as Calendar.</div>
+                  <div>
+                    1. Enable the Gmail API in Google Cloud Console.
+                  </div>
+                  <div>
+                    2. Re-run <span className="font-mono">npm run google:auth</span> and approve the new
+                    mail permissions (read / draft / send). That refreshed token covers Gmail.
+                  </div>
+                  <div className="text-neutral-500">
+                    Scout reads all folders and can draft freely, but always asks before sending.
+                  </div>
                 </div>
               )}
             </Card>

@@ -11,3 +11,5 @@ One place for bugs and feature requests. Newest first.
 | 2 | UI | Chat box too low — activates iOS home-bar / Siri gesture. | ✅ fixed — added safe-area inset (`env(safe-area-inset-bottom)`) + `viewport-fit=cover` so the input clears the home bar. |
 | 3 | Feature | Photo uploads in chat for Scout to review. | ✅ done — attach button, client-side resize, image sent to Scout (vision), shown in the bubble, persisted in history. |
 | 4 | Bug (mobile) | Editing an idea: couldn't scroll to Save; window too small. | ✅ fixed — backstage `main` was `overflow-hidden` after the mobile layout change; now scrolls. |
+| 5 | UI | Chat should open at the most recent message, not the top. | ✅ fixed — chat jumps to the latest message on open. |
+| 6 | Feature | Gmail — read all folders, create drafts, send (with permission). | ✅ built; needs a one-time Google re-consent to grant Gmail scopes (user step). Sending always asks first. |

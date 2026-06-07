@@ -125,13 +125,9 @@ export default function ChatClient({
   const landed = useRef(false);
 
   useEffect(() => {
-    // Land on the glance (top) on first open; only auto-scroll once the
-    // conversation is active so new replies stay in view.
-    if (!landed.current) {
-      landed.current = true;
-      return;
-    }
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Open at the most recent message: jump instantly on first load, smooth after.
+    bottomRef.current?.scrollIntoView({ behavior: landed.current ? "smooth" : "auto" });
+    landed.current = true;
   }, [messages, sending]);
 
   async function send(text: string) {

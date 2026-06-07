@@ -7,6 +7,7 @@ import {
   tasks as tasksTable,
   ideas as ideasTable,
   proposedUpdates as proposedUpdatesTable,
+  activityLog as activityTable,
   type Role,
   type AttentionType,
 } from "@/db";
@@ -86,6 +87,8 @@ Tasks & reminders live in Todoist (the source of truth). create_task/complete_ta
 Ideas: when create_idea reports duplicateFound, don't duplicate — ask whether to add a note (add_idea_note) or make a new one (force=true).
 
 No duplicate tasks: when create_task reports duplicateFound, do NOT create another — tell her that one's already on the list and ask if she really wants a second (force=true only after she confirms). Never create the same task repeatedly.
+
+Email (Gmail): you can read her mail across all folders (search_emails uses Gmail search syntax — use "in:anywhere" to include all folders/spam/trash, plus operators like from:, subject:, is:unread, newer_than:7d, label:), open a specific message (read_email), and create drafts (create_email_draft). SENDING is different: NEVER call send_email without her explicit go-ahead in the conversation. Default to writing the draft and asking "Want me to send it?" — only send_email after she clearly says yes. Summarize, don't dump raw headers.
 
 Trust: confirm briefly what changed; don't over-explain unless she asks why. Every action is undoable ("undo that").
 
@@ -294,6 +297,39 @@ const TOOLS: Anthropic.Tool[] = [
     description: "Fetch today's Google Calendar events (read-only).",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "search_emails",
+    description:
+      "Search/read the user's Gmail across all folders. `query` is Gmail search syntax (e.g. 'in:anywhere', 'from:mom', 'is:unread', 'subject:invoice', 'newer_than:7d', 'label:PTO'). Empty = recent inbox. Returns id/from/subject/date/snippet.",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" }, max: { type: "number" } },
+    },
+  },
+  {
+    name: "read_email",
+    description: "Read the full body of one email by id (from search_emails).",
+    input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "create_email_draft",
+    description: "Create a Gmail draft (does NOT send). Safe to do when she asks you to write something.",
+    input_schema: {
+      type: "object",
+      properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } },
+      required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "send_email",
+    description:
+      "Send an email via Gmail. ONLY call this after the user has explicitly confirmed they want it sent — never on your own initiative.",
+    input_schema: {
+      type: "object",
+      properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } },
+      required: ["to", "subject", "body"],
+    },
+  },
 ];
 
 async function resolveProjectId(roleId: string | null, projectName?: string): Promise<string | null> {
@@ -304,6 +340,11 @@ async function resolveProjectId(roleId: string | null, projectName?: string): Pr
     .where(and(eq(projectsTable.roleId, roleId), ilike(projectsTable.name, `%${projectName}%`)))
     .limit(1);
   return p?.id ?? null;
+}
+
+// Email actions aren't undoable, but we record them for transparency (Review page).
+async function logEmailActivity(kind: string, summary: string, conversationId: string | null) {
+  await db.insert(activityTable).values({ actionKind: kind, summary, source: "chat", conversationId });
 }
 
 async function runTool(
@@ -474,6 +515,41 @@ async function runTool(
     if (!calendarEnabled()) return j({ ok: false, error: "Google Calendar not connected." });
     const events = await listTodaysEvents();
     return j({ ok: true, count: events.length, summary: formatEvents(events) });
+  }
+
+  if (name === "search_emails" || name === "read_email" || name === "create_email_draft" || name === "send_email") {
+    const gmail = await import("./integrations/gmail");
+    if (!gmail.gmailConfigured()) {
+      return j({ ok: false, error: "Gmail not connected — re-run google:auth with Gmail scopes." });
+    }
+    try {
+      if (name === "search_emails") {
+        const emails = await gmail.listEmails((input.query as string) ?? "", (input.max as number) ?? 15);
+        return j({ ok: true, count: emails.length, emails });
+      }
+      if (name === "read_email") {
+        return j({ ok: true, email: await gmail.readEmail(input.id as string) });
+      }
+      if (name === "create_email_draft") {
+        const id = await gmail.createDraft({
+          to: input.to as string,
+          subject: input.subject as string,
+          body: input.body as string,
+        });
+        await logEmailActivity("email_draft", `Drafted email to ${input.to} — "${input.subject}"`, conversationId);
+        return j({ ok: true, draftId: id });
+      }
+      // send_email
+      const id = await gmail.sendEmail({
+        to: input.to as string,
+        subject: input.subject as string,
+        body: input.body as string,
+      });
+      await logEmailActivity("email_sent", `Sent email to ${input.to} — "${input.subject}"`, conversationId);
+      return j({ ok: true, sent: true, messageId: id });
+    } catch (err) {
+      return j({ ok: false, error: err instanceof Error ? err.message : "Gmail error" });
+    }
   }
 
   return j({ ok: false, error: `Unknown tool ${name}` });

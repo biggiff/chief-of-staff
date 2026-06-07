@@ -37,6 +37,14 @@ import {
   getCompassOverview,
   manageRole,
   manageProject,
+  manageCrossroad,
+  listCrossroads,
+  recordObservation,
+  listObservations,
+  listActivity,
+  listCheckins,
+  listIdeas,
+  manageIdea,
   undoLast,
 } from "./operator";
 import { formatDate } from "./dates";
@@ -338,6 +346,77 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "search_crossroads",
+    description: "List/search Crossroads (recurring decisions): title, status, current leaning, unresolved concerns, revisit count. Use to check 'have we decided this before?'",
+    input_schema: { type: "object", properties: { query: { type: "string" } } },
+  },
+  {
+    name: "manage_crossroad",
+    description: "Create, update, or archive a Crossroad (a recurring decision). update/archive find it by query. Track current_leaning, unresolved_concerns, status (open/decided/revisiting/archived). Updating counts as a revisit.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["create", "update", "archive"] },
+        query: { type: "string", description: "Existing crossroad to update/archive." },
+        title: { type: "string" },
+        description: { type: "string" },
+        status: { type: "string", enum: ["open", "decided", "revisiting", "archived"] },
+        current_leaning: { type: "string" },
+        unresolved_concerns: { type: "string" },
+        reasoning: { type: "string" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "record_observation",
+    description: "Save an Observation — a meaningful pattern or insight you've noticed (not a metric). e.g. 'Founder gets discussed a lot but little progress logged.'",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        detail: { type: "string" },
+        role_name: { type: "string" },
+        severity: { type: "string", enum: ["info", "notice", "concern"] },
+      },
+      required: ["summary"],
+    },
+  },
+  {
+    name: "get_observations",
+    description: "List/search Observations you've recorded.",
+    input_schema: { type: "object", properties: { query: { type: "string" } } },
+  },
+  {
+    name: "get_activity",
+    description: "Read/search the activity log — what you've changed recently (with timestamps and whether undone). Use for 'what did you do?' / 'what changed today?'",
+    input_schema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } } },
+  },
+  {
+    name: "get_checkins",
+    description: "Read recent check-ins (energy, overwhelm, notes) to see how she's been trending.",
+    input_schema: { type: "object", properties: { limit: { type: "number" } } },
+  },
+  {
+    name: "get_ideas",
+    description: "List/search captured ideas (title, status, role).",
+    input_schema: { type: "object", properties: { query: { type: "string" } } },
+  },
+  {
+    name: "manage_idea",
+    description: "Update or archive an existing idea (find it by query). Change its title or status (captured/resurfaced/active/archived).",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["update", "archive"] },
+        query: { type: "string" },
+        title: { type: "string" },
+        status: { type: "string", enum: ["captured", "resurfaced", "active", "archived"] },
+      },
+      required: ["action", "query"],
+    },
+  },
+  {
     name: "add_working_agreement",
     description:
       "Save a standing instruction about how you should operate — a behavioral preference, operating rule, correction, or lesson. Use when she tells you how to work ('always…', 'from now on…', 'stop doing X', 'remember that I prefer…') or corrects your behavior. These load every session and shape how you act.",
@@ -602,6 +681,66 @@ async function runTool(
       conversationId,
     });
     return j(res);
+  }
+
+  if (name === "search_crossroads") {
+    return j({ ok: true, crossroads: await listCrossroads(input.query as string | undefined) });
+  }
+
+  if (name === "manage_crossroad") {
+    return j(
+      await manageCrossroad({
+        action: input.action as "create" | "update" | "archive",
+        query: input.query as string | undefined,
+        title: input.title as string | undefined,
+        description: input.description as string | undefined,
+        status: input.status as string | undefined,
+        currentLeaning: input.current_leaning as string | undefined,
+        unresolvedConcerns: input.unresolved_concerns as string | undefined,
+        reasoning: input.reasoning as string | undefined,
+        conversationId,
+      })
+    );
+  }
+
+  if (name === "record_observation") {
+    return j(
+      await recordObservation({
+        summary: input.summary as string,
+        detail: input.detail as string | undefined,
+        roleName: input.role_name as string | undefined,
+        severity: input.severity as string | undefined,
+        conversationId,
+      })
+    );
+  }
+
+  if (name === "get_observations") {
+    return j({ ok: true, observations: await listObservations(input.query as string | undefined) });
+  }
+
+  if (name === "get_activity") {
+    return j({ ok: true, activity: await listActivity(input.query as string | undefined, (input.limit as number) ?? 20) });
+  }
+
+  if (name === "get_checkins") {
+    return j({ ok: true, checkins: await listCheckins((input.limit as number) ?? 10) });
+  }
+
+  if (name === "get_ideas") {
+    return j({ ok: true, ideas: await listIdeas(input.query as string | undefined) });
+  }
+
+  if (name === "manage_idea") {
+    return j(
+      await manageIdea({
+        action: input.action as "update" | "archive",
+        query: input.query as string,
+        title: input.title as string | undefined,
+        status: input.status as string | undefined,
+        conversationId,
+      })
+    );
   }
 
   if (name === "add_working_agreement") {

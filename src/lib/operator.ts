@@ -9,6 +9,8 @@ import {
   checkinRoleScores as checkinRoleScoresTable,
   roleAttentionEvents as attentionTable,
   workingAgreements as agreementsTable,
+  decisions as decisionsTable,
+  insights as insightsTable,
   activityLog as activityTable,
   type AttentionType,
   type Priority,
@@ -564,6 +566,197 @@ export async function manageProject(input: {
   return { ok: true, summary };
 }
 
+/* ----------------------------- Crossroads ------------------------------ */
+
+async function findDecision(query: string) {
+  const [d] = await db.select().from(decisionsTable).where(ilike(decisionsTable.title, `%${query}%`)).limit(1);
+  return d ?? null;
+}
+
+export async function listCrossroads(query?: string, includeArchived = false) {
+  const rows = await db.select().from(decisionsTable).orderBy(desc(decisionsTable.updatedAt));
+  const q = query?.toLowerCase().trim();
+  return rows
+    .filter((d) => (includeArchived ? true : d.status !== "archived"))
+    .filter((d) => !q || normalizeText(d.title).includes(normalizeText(q)) || (d.description ?? "").toLowerCase().includes(q))
+    .map((d) => ({
+      title: d.title,
+      status: d.status,
+      currentLeaning: d.currentLeaning ?? d.decision ?? null,
+      unresolvedConcerns: d.unresolvedConcerns ?? null,
+      revisitCount: d.revisitCount,
+    }));
+}
+
+export async function manageCrossroad(input: {
+  action: "create" | "update" | "archive";
+  query?: string;
+  title?: string;
+  description?: string;
+  status?: string;
+  currentLeaning?: string;
+  unresolvedConcerns?: string;
+  reasoning?: string;
+  conversationId?: string | null;
+}) {
+  if (input.action === "create") {
+    if (!input.title) return { ok: false, summary: "Need a title to create a crossroad." };
+    // Guard against duplicates (incl. a model double-call in one turn).
+    const dup = await findDecision(input.title);
+    if (dup && dup.status !== "archived") {
+      return { ok: true, summary: `That crossroad already exists ("${dup.title}").`, duplicate: true };
+    }
+    const now = new Date();
+    const [d] = await db
+      .insert(decisionsTable)
+      .values({
+        title: input.title.slice(0, 200),
+        description: input.description ?? null,
+        status: (input.status ?? "open") as never,
+        currentLeaning: input.currentLeaning ?? null,
+        unresolvedConcerns: input.unresolvedConcerns ?? null,
+        reasoning: input.reasoning ?? null,
+        firstDiscussedAt: now,
+        latestDiscussedAt: now,
+        revisitCount: 0,
+      })
+      .returning();
+    const summary = `Opened crossroad "${d.title}"`;
+    await logActivity({ actionKind: "crossroad", summary, entityTable: "decisions", entityId: d.id, undoPayload: { op: "create", id: d.id }, conversationId: input.conversationId });
+    return { ok: true, summary };
+  }
+
+  const d = input.query ? await findDecision(input.query) : null;
+  if (!d) return { ok: false, summary: "Couldn't find that crossroad." };
+
+  if (input.action === "archive") {
+    const prev = { status: d.status };
+    await db.update(decisionsTable).set({ status: "archived", updatedAt: new Date() }).where(eq(decisionsTable.id, d.id));
+    const summary = `Archived crossroad "${d.title}"`;
+    await logActivity({ actionKind: "crossroad", summary, entityTable: "decisions", entityId: d.id, undoPayload: { op: "archive", id: d.id, prev }, conversationId: input.conversationId });
+    return { ok: true, summary };
+  }
+
+  // update — also counts as a revisit
+  const prev = {
+    title: d.title, description: d.description, status: d.status,
+    currentLeaning: d.currentLeaning, unresolvedConcerns: d.unresolvedConcerns, reasoning: d.reasoning,
+  };
+  await db
+    .update(decisionsTable)
+    .set({
+      title: input.title ?? d.title,
+      description: input.description ?? d.description,
+      status: (input.status ?? d.status) as never,
+      currentLeaning: input.currentLeaning ?? d.currentLeaning,
+      unresolvedConcerns: input.unresolvedConcerns ?? d.unresolvedConcerns,
+      reasoning: input.reasoning ?? d.reasoning,
+      latestDiscussedAt: new Date(),
+      revisitCount: d.revisitCount + 1,
+      updatedAt: new Date(),
+    })
+    .where(eq(decisionsTable.id, d.id));
+  const summary = `Updated crossroad "${d.title}" (revisit #${d.revisitCount + 1})`;
+  await logActivity({ actionKind: "crossroad", summary, entityTable: "decisions", entityId: d.id, undoPayload: { op: "update", id: d.id, prev }, conversationId: input.conversationId });
+  return { ok: true, summary };
+}
+
+/* ----------------------------- Observations ---------------------------- */
+
+export async function recordObservation(input: {
+  summary: string;
+  detail?: string;
+  roleName?: string;
+  severity?: string;
+  kind?: string;
+  conversationId?: string | null;
+}) {
+  const role = input.roleName ? matchRole(input.roleName, await activeRoles()) : null;
+  const [o] = await db
+    .insert(insightsTable)
+    .values({
+      kind: input.kind ?? "observation",
+      roleId: role?.id ?? null,
+      summary: input.summary.slice(0, 300),
+      detail: input.detail ?? null,
+      severity: input.severity ?? "info",
+      status: "open",
+    })
+    .returning();
+  const summary = `Noted an observation: "${input.summary.slice(0, 80)}"`;
+  await logActivity({ actionKind: "observation", summary, entityTable: "insights", entityId: o.id, undoPayload: { op: "create", id: o.id }, conversationId: input.conversationId });
+  return { ok: true, summary };
+}
+
+export async function listObservations(query?: string, status = "open") {
+  const rows = await db.select().from(insightsTable).orderBy(desc(insightsTable.createdAt));
+  const q = query?.toLowerCase().trim();
+  return rows
+    .filter((o) => (status === "all" ? true : o.status === status))
+    .filter((o) => !q || o.summary.toLowerCase().includes(q) || (o.detail ?? "").toLowerCase().includes(q))
+    .map((o) => ({ summary: o.summary, detail: o.detail, severity: o.severity, status: o.status }));
+}
+
+/* ------------------------- Activity log (read) ------------------------- */
+
+export async function listActivity(query?: string, limit = 20) {
+  const rows = await db.select().from(activityTable).orderBy(desc(activityTable.createdAt)).limit(200);
+  const q = query?.toLowerCase().trim();
+  return rows
+    .filter((a) => !q || a.summary.toLowerCase().includes(q) || a.actionKind.toLowerCase().includes(q))
+    .slice(0, limit)
+    .map((a) => ({ summary: a.summary, kind: a.actionKind, when: a.createdAt.toISOString(), undone: !!a.undoneAt }));
+}
+
+/* --------------------------- Check-ins (read) -------------------------- */
+
+export async function listCheckins(limit = 10) {
+  const rows = await db.select().from(checkinsTable).orderBy(desc(checkinsTable.checkinDate), desc(checkinsTable.createdAt)).limit(limit);
+  return rows.map((c) => ({ date: c.checkinDate, energy: c.energyLevel, overwhelm: c.overwhelmLevel, notes: c.notes }));
+}
+
+/* ----------------------------- Ideas (more) ---------------------------- */
+
+export async function listIdeas(query?: string, includeArchived = false) {
+  const rows = await db.select().from(ideasTable).orderBy(desc(ideasTable.createdAt));
+  const roles = await activeRoles();
+  const roleName = new Map(roles.map((r) => [r.id, r.name]));
+  const q = query?.toLowerCase().trim();
+  return rows
+    .filter((i) => (includeArchived ? true : i.status !== "archived"))
+    .filter((i) => !q || i.title.toLowerCase().includes(q) || (i.notes ?? "").toLowerCase().includes(q))
+    .map((i) => ({ title: i.title, status: i.status, role: i.roleId ? roleName.get(i.roleId) ?? null : null }));
+}
+
+export async function manageIdea(input: {
+  action: "update" | "archive";
+  query: string;
+  title?: string;
+  status?: string;
+  conversationId?: string | null;
+}) {
+  const matches = await findSimilarIdeas(input.query);
+  const idea = matches[0]?.idea;
+  if (!idea) return { ok: false, summary: "Couldn't find that idea." };
+
+  if (input.action === "archive") {
+    const prev = { status: idea.status };
+    await db.update(ideasTable).set({ status: "archived", updatedAt: new Date() }).where(eq(ideasTable.id, idea.id));
+    const summary = `Archived idea "${idea.title}"`;
+    await logActivity({ actionKind: "idea_manage", summary, entityTable: "ideas", entityId: idea.id, undoPayload: { op: "archive", id: idea.id, prev }, conversationId: input.conversationId });
+    return { ok: true, summary };
+  }
+
+  const prev = { title: idea.title, status: idea.status };
+  await db
+    .update(ideasTable)
+    .set({ title: input.title ?? idea.title, status: (input.status ?? idea.status) as never, updatedAt: new Date() })
+    .where(eq(ideasTable.id, idea.id));
+  const summary = `Updated idea "${idea.title}"`;
+  await logActivity({ actionKind: "idea_manage", summary, entityTable: "ideas", entityId: idea.id, undoPayload: { op: "update", id: idea.id, prev }, conversationId: input.conversationId });
+  return { ok: true, summary };
+}
+
 /* -------------------------------- Undo --------------------------------- */
 
 export async function undoLast(): Promise<{ ok: boolean; message: string }> {
@@ -656,6 +849,30 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
           const prev = p.prev as { name: string; roleId: string | null; status: string };
           await db.update(projectsTable).set({ name: prev.name, roleId: prev.roleId, status: prev.status as never }).where(eq(projectsTable.id, id));
         }
+        break;
+      }
+      case "crossroad": {
+        const id = p.id as string;
+        if (p.op === "create") await db.delete(decisionsTable).where(eq(decisionsTable.id, id));
+        else if (p.op === "archive") {
+          const prev = p.prev as { status: string };
+          await db.update(decisionsTable).set({ status: (prev?.status ?? "open") as never }).where(eq(decisionsTable.id, id));
+        } else if (p.op === "update") {
+          const prev = p.prev as Record<string, unknown>;
+          await db.update(decisionsTable).set({ ...prev } as never).where(eq(decisionsTable.id, id));
+        }
+        break;
+      }
+      case "observation":
+        await db.delete(insightsTable).where(eq(insightsTable.id, p.id as string));
+        break;
+      case "idea_manage": {
+        const id = p.id as string;
+        const prev = p.prev as { title?: string; status: string };
+        await db
+          .update(ideasTable)
+          .set({ title: prev.title ?? undefined, status: prev.status as never } as never)
+          .where(eq(ideasTable.id, id));
         break;
       }
       default:

@@ -169,6 +169,8 @@ export const briefings = pgTable("briefings", {
   // Scout-voiced home-screen copy, cached so the home doesn't call the model per load.
   scoutOpener: text("scout_opener"),
   scoutNote: text("scout_note"),
+  // Scout's full voiced morning briefing (his judgment, 3-5 short paragraphs).
+  scoutBriefing: text("scout_briefing"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

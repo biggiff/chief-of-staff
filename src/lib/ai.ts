@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { and, eq, isNull, ilike } from "drizzle-orm";
+import { and, eq, isNull, ilike, desc } from "drizzle-orm";
 import {
   db,
   roles as rolesTable,
@@ -9,6 +9,9 @@ import {
   proposedUpdates as proposedUpdatesTable,
   workingAgreements as agreementsTable,
   activityLog as activityTable,
+  briefings as briefingsTable,
+  messages as messagesTable,
+  conversations as conversationsTable,
   type Role,
   type AttentionType,
 } from "@/db";
@@ -18,6 +21,7 @@ import {
   getOrCreateTodaysBriefing,
   generateBriefing,
   briefingToText,
+  ensureScoutBriefing,
 } from "./briefing";
 import {
   activeRoles,
@@ -48,7 +52,7 @@ import {
   manageIdea,
   undoLast,
 } from "./operator";
-import { formatDate } from "./dates";
+import { formatDate, startEndOfToday } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
 /**
@@ -555,9 +559,14 @@ async function runTool(
   const j = (o: unknown) => JSON.stringify(o);
 
   if (name === "get_or_generate_briefing") {
-    const briefing = input.regenerate ? await generateBriefing() : await getOrCreateTodaysBriefing();
+    let briefing = input.regenerate ? await generateBriefing() : await getOrCreateTodaysBriefing();
+    if (input.regenerate) {
+      // Force a fresh voiced briefing too.
+      await db.update(briefingsTable).set({ scoutBriefing: null }).where(eq(briefingsTable.id, briefing.id));
+      briefing = { ...briefing, scoutBriefing: null };
+    }
     const focus = await focusRoleName(briefing.focusRoleId, roles);
-    return briefingToText(briefing, focus);
+    return ensureScoutBriefing(briefing, focus);
   }
 
   if (name === "log_attention") {
@@ -929,6 +938,113 @@ Keep each under ~180 characters. Today's picture:
   } catch {
     return { read: text.slice(0, 200), note: "" };
   }
+}
+
+const BRIEFING_SYSTEM = `${SCOUT_VOICE}
+
+You are writing Selena's morning briefing. This is your JUDGMENT, not a report. Imagine you have 30 seconds with her this morning — what do you actually say?
+
+Default shape (a guide, not a template — vary it with what's real today):
+1) The one primary focus.
+2) One thing you're watching.
+3) One practical action or reminder.
+
+Hard rules:
+- 3 to 5 SHORT paragraphs. Plain, warm, direct — a message from a friend who's seen everything, not a dashboard.
+- Have an opinion. Briefly say why the focus is the focus when it helps.
+- Weave in a Crossroad or Observation ONLY when genuinely relevant — don't force them.
+- If it's honestly a quiet, ordinary day, say so ("nothing unusual today") — that's a valid briefing.
+- NEVER list metrics, enumerate observations, or summarize every source. No "3 tasks due, 2 observations." No manufactured urgency. No motivational-poster language.
+- Follow her working agreements.
+
+She should finish reading in under 30 seconds and immediately know: what matters most, what you're watching, and what deserves attention today.`;
+
+/** Generate Scout's voiced morning briefing — his judgment across all sources. */
+export async function generateScoutBriefing(): Promise<string> {
+  const client = new Anthropic();
+  const lines: string[] = [];
+
+  const scored = await scoreRoles();
+  lines.push("ROLES (most-needing-attention first):");
+  for (const s of scored.slice(0, 8)) {
+    const bits = [`importance ${s.role.importanceLevel}`, `${s.daysSinceAttention ?? "?"}d since attention`, `${s.openTaskCount} open tasks`];
+    if (s.reasons[0]) bits.push(`top signal: ${s.reasons[0].label}`);
+    lines.push(`- ${s.role.name}: ${bits.join(", ")}`);
+  }
+
+  const observations = await listObservations();
+  if (observations.length) {
+    lines.push("\nOPEN OBSERVATIONS (patterns you've already noticed):");
+    observations.slice(0, 6).forEach((o) => lines.push(`- ${o.summary}${o.detail ? ` — ${o.detail}` : ""}`));
+  }
+
+  const crossroads = await listCrossroads();
+  if (crossroads.length) {
+    lines.push("\nOPEN CROSSROADS (recurring decisions):");
+    crossroads.slice(0, 6).forEach((c) => lines.push(`- "${c.title}" leaning ${c.currentLeaning ?? "?"}, revisited ${c.revisitCount}×${c.unresolvedConcerns ? `; open: ${c.unresolvedConcerns}` : ""}`));
+  }
+
+  try {
+    const { calendarEnabled, listTodaysEvents, formatEvents } = await import("./integrations/google-calendar");
+    if (calendarEnabled()) {
+      const events = await listTodaysEvents();
+      lines.push(`\nTODAY'S CALENDAR:\n${formatEvents(events)}`);
+    }
+  } catch {
+    /* optional */
+  }
+
+  // Tasks due today + overdue.
+  const { start, end } = startEndOfToday();
+  const open = await db.select().from(tasksTable).where(eq(tasksTable.status, "open"));
+  const roleNm = new Map(scored.map((s) => [s.role.id, s.role.name]));
+  const dueToday = open.filter((t) => t.dueDate && new Date(t.dueDate) >= start && new Date(t.dueDate) <= end);
+  const overdue = open.filter((t) => t.dueDate && new Date(t.dueDate) < start);
+  if (dueToday.length) lines.push(`\nDUE TODAY: ${dueToday.slice(0, 8).map((t) => t.title).join("; ")}`);
+  if (overdue.length) lines.push(`\nOVERDUE: ${overdue.slice(0, 8).map((t) => `${t.title} (${t.roleId ? roleNm.get(t.roleId) ?? "?" : "no role"})`).join("; ")}`);
+
+  const checkins = await listCheckins(2);
+  if (checkins.length) {
+    lines.push("\nRECENT CHECK-INS:");
+    checkins.forEach((c) => lines.push(`- ${formatDate(c.date)}: energy ${c.energy ?? "?"}, overwhelm ${c.overwhelm ?? "?"}${c.notes ? ` — ${c.notes}` : ""}`));
+  }
+
+  try {
+    const { gmailConfigured, listEmails } = await import("./integrations/gmail");
+    if (gmailConfigured()) {
+      const unread = await listEmails("is:unread newer_than:7d", 25);
+      const byLabel = new Map<string, number>();
+      for (const e of unread) for (const l of e.labels.length ? e.labels : ["(unlabeled)"]) byLabel.set(l, (byLabel.get(l) ?? 0) + 1);
+      if (unread.length) lines.push(`\nUNREAD EMAIL (7d, by label): ${[...byLabel.entries()].map(([l, n]) => `${l}:${n}`).join(", ")}`);
+    }
+  } catch {
+    /* optional */
+  }
+
+  const agreements = await db.select().from(agreementsTable).where(eq(agreementsTable.status, "active"));
+  if (agreements.length) {
+    lines.push("\nWORKING AGREEMENTS (how she wants you to operate):");
+    agreements.forEach((a) => lines.push(`- ${a.text}`));
+  }
+
+  // Recent conversation flavor.
+  const [conv] = await db.select().from(conversationsTable).orderBy(desc(conversationsTable.updatedAt)).limit(1);
+  if (conv) {
+    const recent = await db.select().from(messagesTable).where(eq(messagesTable.conversationId, conv.id)).orderBy(desc(messagesTable.createdAt)).limit(6);
+    if (recent.length) {
+      lines.push("\nRECENT CONVERSATION (newest first):");
+      recent.forEach((m) => lines.push(`- ${m.role === "user" ? "Selena" : "Scout"}: ${m.content.slice(0, 160)}`));
+    }
+  }
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 900,
+    thinking: { type: "disabled" },
+    system: BRIEFING_SYSTEM,
+    messages: [{ role: "user", content: `Today is ${formatDate(new Date())}. Here's the full picture:\n\n${lines.join("\n")}\n\nWrite the briefing.` }],
+  });
+  return response.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("").trim();
 }
 
 export type HistoryMsg = { role: "user" | "chief_of_staff" | "system"; content: string };

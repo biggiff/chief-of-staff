@@ -8,8 +8,8 @@ The user speaks naturally; Scout translates intent into Compass operations.
 | 3.0 | Access Completion — Scout can read/write/search/reason over every Compass entity | ✅ done |
 | 3.1 | Working Agreements — standing instructions that shape Scout's behavior | ✅ done |
 | 3.2 | **Crossroads Engine** — recurring-decision tracking ("we've been here before") | ✅ done |
-| 3.3 | **Observation Engine** — make cross-source synthesis fire automatically (triggers) | ⬜ next |
-| 3.4 | **Briefing Intelligence** — briefings that draw on roles, attention, crossroads, observations, email, calendar | ⬜ planned |
+| 3.3 | **Observation Engine** — automatic, quality-first cross-source pattern detection | ✅ done |
+| 3.4 | **Briefing Intelligence** — briefings that draw on roles, attention, crossroads, observations, email, calendar | ⬜ next |
 | 3.5 | **Natural Language Layer** — user never needs Compass terminology | ⬜ planned (spec below) |
 
 Build order: **3.3 → 3.4 → 3.5.** Pause for testing after each.

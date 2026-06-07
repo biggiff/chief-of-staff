@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, briefings } from "@/db";
-import { generateBriefing } from "@/lib/briefing";
+import { generateBriefing, ensureScoutBriefing } from "@/lib/briefing";
 import { todayStr } from "@/lib/dates";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,8 @@ export async function POST() {
     const today = todayStr();
     await db.delete(briefings).where(eq(briefings.briefingDate, today));
     const briefing = await generateBriefing(today);
+    // Generate Scout's voiced judgment now so the page loads it instantly.
+    await ensureScoutBriefing(briefing);
     return NextResponse.json({
       ok: true,
       briefingId: briefing.id,

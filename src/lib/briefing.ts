@@ -391,6 +391,34 @@ export async function generateBriefing(briefingDate = todayStr()): Promise<Brief
   return saved;
 }
 
+/**
+ * Return Scout's voiced briefing for a row — his judgment across all sources.
+ * Lazily generated once and cached on the row. Falls back to the rule-based
+ * text when no AI key is configured (or generation fails).
+ */
+export async function ensureScoutBriefing(
+  briefing: Briefing,
+  focusRoleName?: string | null
+): Promise<string> {
+  if (briefing.scoutBriefing) return briefing.scoutBriefing;
+  try {
+    const { aiEnabled, generateScoutBriefing } = await import("./ai");
+    if (aiEnabled()) {
+      const voiced = await generateScoutBriefing();
+      if (voiced) {
+        await db
+          .update(briefingsTable)
+          .set({ scoutBriefing: voiced })
+          .where(eq(briefingsTable.id, briefing.id));
+        return voiced;
+      }
+    }
+  } catch (err) {
+    console.error("scout briefing generation failed", err);
+  }
+  return briefingToText(briefing, focusRoleName);
+}
+
 export async function getLatestBriefing(): Promise<Briefing | null> {
   const [b] = await db
     .select()

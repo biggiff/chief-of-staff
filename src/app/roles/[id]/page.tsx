@@ -1,11 +1,22 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, eq } from "drizzle-orm";
-import { db, roles, projects, tasks } from "@/db";
-import { PageShell, Card, Badge } from "@/components/ui";
+import { and, desc, eq } from "drizzle-orm";
+import { db, roles, projects, tasks, roleAttentionEvents } from "@/db";
+import { PageShell, Card, Badge, Field, TextArea, Select, PrimaryButton } from "@/components/ui";
+import { logAttentionEvent } from "@/app/actions";
 import { formatDate } from "@/lib/dates";
 
 export const dynamic = "force-dynamic";
+
+const ATTENTION_OPTS = [
+  { value: "progress", label: "Progress (built/shipped something)" },
+  { value: "focused_work", label: "Focused work" },
+  { value: "planning", label: "Planning" },
+  { value: "thinking", label: "Thinking" },
+  { value: "relationship", label: "Relationship / connection" },
+  { value: "maintenance", label: "Maintenance" },
+  { value: "rest", label: "Rest" },
+];
 
 export default async function RoleDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -17,6 +28,12 @@ export default async function RoleDetailPage({ params }: { params: Promise<{ id:
     .select()
     .from(tasks)
     .where(and(eq(tasks.roleId, id), eq(tasks.status, "open")));
+  const attention = await db
+    .select()
+    .from(roleAttentionEvents)
+    .where(eq(roleAttentionEvents.roleId, id))
+    .orderBy(desc(roleAttentionEvents.createdAt))
+    .limit(10);
 
   return (
     <PageShell
@@ -86,6 +103,49 @@ export default async function RoleDetailPage({ params }: { params: Promise<{ id:
               </div>
             </div>
             {t.dueDate && <p className="text-xs text-neutral-400 mt-1">Due {formatDate(t.dueDate)}</p>}
+          </Card>
+        ))}
+      </div>
+
+      <h2 className="text-sm font-semibold mt-6 mb-2">Attention</h2>
+      <Card className="mb-3">
+        <p className="text-xs text-neutral-500 mb-3">
+          Log time/energy given to this role. The Chief of Staff will do this automatically from
+          chat in the next phase — this manual form exists for testing and correction.
+        </p>
+        <form action={logAttentionEvent} className="grid gap-3 sm:grid-cols-2">
+          <input type="hidden" name="roleId" value={role.id} />
+          <Select label="Type" name="attentionType" options={ATTENTION_OPTS} defaultValue="progress" />
+          <Field label="Duration (minutes)" name="durationMinutes" type="number" placeholder="e.g. 60" />
+          <Select
+            label="Project (optional)"
+            name="projectId"
+            options={roleProjects.map((p) => ({ value: p.id, label: p.name }))}
+            includeBlank="— none —"
+          />
+          <div className="sm:col-span-2">
+            <TextArea label="Notes" name="notes" rows={1} />
+          </div>
+          <div className="sm:col-span-2">
+            <PrimaryButton>Log attention</PrimaryButton>
+          </div>
+        </form>
+      </Card>
+
+      <div className="grid gap-2">
+        {attention.length === 0 && (
+          <p className="text-sm text-neutral-500">No attention logged yet.</p>
+        )}
+        {attention.map((a) => (
+          <Card key={a.id}>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">
+                <span className="font-medium">{a.attentionType.replace("_", " ")}</span>
+                {a.durationMinutes ? ` · ${a.durationMinutes} min` : ""}
+                {a.notes ? ` — ${a.notes}` : ""}
+              </span>
+              <span className="text-xs text-neutral-400">{formatDate(a.createdAt)}</span>
+            </div>
           </Card>
         ))}
       </div>

@@ -1,4 +1,4 @@
-import { and, eq, isNull, desc } from "drizzle-orm";
+import { and, eq, isNull, desc, gte } from "drizzle-orm";
 import {
   db,
   roles as rolesTable,
@@ -7,10 +7,19 @@ import {
   briefings as briefingsTable,
   checkins as checkinsTable,
   checkinRoleScores as checkinRoleScoresTable,
+  roleAttentionEvents as attentionTable,
   type Role,
   type Briefing,
+  type AttentionType,
 } from "@/db";
 import { daysSince, todayStr } from "./dates";
+import {
+  attentionWeightsForRole,
+  recencyFactor,
+  durationFactor,
+  ATTENTION_WINDOW_DAYS,
+  MAX_ATTENTION_CREDIT,
+} from "./scoring-config";
 
 /**
  * Rule-based attention scoring.
@@ -34,6 +43,8 @@ export type RoleScore = {
   daysSinceAttention: number | null;
   topAvoidedTaskTitle: string | null;
   maxAvoidanceCount: number;
+  attentionCredit: number;
+  recentAttentionByType: Partial<Record<AttentionType, number>>;
 };
 
 const IMPORTANCE_WEIGHT: Record<string, number> = {
@@ -73,6 +84,18 @@ export async function scoreRoles(): Promise<RoleScore[]> {
     for (const s of scores) {
       if (s.healthScore != null) roleHealth.set(s.roleId, s.healthScore);
     }
+  }
+
+  // Recent attention events (within the scoring window), grouped by role.
+  const windowStart = new Date(Date.now() - ATTENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const recentEvents = await db
+    .select()
+    .from(attentionTable)
+    .where(gte(attentionTable.createdAt, windowStart));
+  const eventsByRole = new Map<string, typeof recentEvents>();
+  for (const e of recentEvents) {
+    if (!eventsByRole.has(e.roleId)) eventsByRole.set(e.roleId, []);
+    eventsByRole.get(e.roleId)!.push(e);
   }
 
   const results: RoleScore[] = [];
@@ -164,22 +187,48 @@ export async function scoreRoles(): Promise<RoleScore[]> {
       }
     }
 
-    // 6) Role-level neglect — no meaningful attention in a while.
-    const attentionDays = daysSince(role.lastMeaningfulAttentionAt);
+    // 6) Recent attention events — typed, config-weighted, recency-decayed.
+    //    Attention ≠ progress: weights come from attentionWeightsForRole so they
+    //    can vary per role later. This is "health credit" that offsets pressure.
+    const events = eventsByRole.get(role.id) ?? [];
+    const weights = attentionWeightsForRole(role);
+    const byType: Partial<Record<AttentionType, number>> = {};
+    let rawCredit = 0;
+    let latestEventAt: Date | null = null;
+    for (const e of events) {
+      const ageDays = daysSince(e.createdAt) ?? 0;
+      rawCredit += weights[e.attentionType] * recencyFactor(ageDays) * durationFactor(e.durationMinutes);
+      byType[e.attentionType] = (byType[e.attentionType] ?? 0) + 1;
+      if (!latestEventAt || e.createdAt > latestEventAt) latestEventAt = e.createdAt;
+    }
+    const attentionCredit = Math.min(Math.round(rawCredit), MAX_ATTENTION_CREDIT);
+
+    // Effective recency = most recent of logged events or the role's stored marker.
+    const candidates = [role.lastMeaningfulAttentionAt, latestEventAt].filter(
+      (d): d is Date => !!d
+    );
+    const lastAttention =
+      candidates.sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+    const attentionDays = daysSince(lastAttention);
+
+    // Role-level neglect — no meaningful attention in a while.
     if (attentionDays == null) {
       const pts = importanceMult;
       score += pts;
-      reasons.push({
-        label: "No meaningful attention ever logged",
-        points: pts,
-      });
+      reasons.push({ label: "No meaningful attention ever logged", points: pts });
     } else if (attentionDays >= 5) {
       const pts = Math.min(Math.floor(attentionDays / 5), 4) * importanceMult;
       score += pts;
-      reasons.push({
-        label: `${attentionDays} days since meaningful attention`,
-        points: pts,
-      });
+      reasons.push({ label: `${attentionDays} days since meaningful attention`, points: pts });
+    }
+
+    // Subtract accumulated attention credit (capped) — recent care lowers pressure.
+    if (attentionCredit > 0) {
+      const summary = Object.entries(byType)
+        .map(([t, n]) => `${t}×${n}`)
+        .join(", ");
+      score -= attentionCredit;
+      reasons.push({ label: `Recent attention (${summary})`, points: -attentionCredit });
     }
 
     // 7) Importance acts as a gentle multiplier on the accumulated pressure.
@@ -205,6 +254,8 @@ export async function scoreRoles(): Promise<RoleScore[]> {
       daysSinceAttention: attentionDays,
       topAvoidedTaskTitle: maxAvoidance >= 2 ? topAvoidedTitle : null,
       maxAvoidanceCount: maxAvoidance,
+      attentionCredit,
+      recentAttentionByType: byType,
     });
   }
 

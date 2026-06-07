@@ -69,6 +69,39 @@ async function main() {
       maintenanceMinimum: "At least one meaningful 15-30 minute action per week.",
       importanceLevel: "high" as const,
     },
+    {
+      name: "PTO Leader",
+      mission:
+        "Serve the school community effectively in a leadership role without letting it crowd out higher-priority roles.",
+      desiredState:
+        "Responsibilities (e.g. treasurer duties) are current, commitments are met, and involvement stays proportional — contributing meaningfully without overextending.",
+      warningSigns:
+        "Deadlines slip, financials/records fall behind, or PTO work expands to consume time that belongs to family or founder work.",
+      maintenanceMinimum: "Core obligations handled on time and no commitments dropped.",
+      importanceLevel: "medium" as const,
+    },
+    {
+      name: "Coach",
+      mission:
+        "Help the kids/team I coach grow in skill and character while keeping the commitment sustainable.",
+      desiredState:
+        "Practices and games are prepared for, players are developing and enjoying it, and coaching energizes rather than drains.",
+      warningSigns:
+        "Showing up unprepared, dreading sessions, or coaching bleeding into time and energy needed elsewhere.",
+      maintenanceMinimum: "Players are coached safely and commitments to the team are kept.",
+      importanceLevel: "medium" as const,
+    },
+    {
+      name: "Health",
+      mission:
+        "Maintain the physical and mental health that everything else depends on.",
+      desiredState:
+        "Consistent movement, decent sleep, reasonable nutrition, and space to decompress — operating with energy rather than running on empty.",
+      warningSigns:
+        "Skipping movement, poor sleep, running on caffeine/stress, or no recovery time for an extended stretch.",
+      maintenanceMinimum: "Basic sleep, food, and at least minimal movement.",
+      importanceLevel: "high" as const,
+    },
   ];
 
   for (const r of seedRoles) {

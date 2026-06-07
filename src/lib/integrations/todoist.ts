@@ -4,18 +4,21 @@ import {
   tasks as tasksTable,
   projects as projectsTable,
   integrations as integrationsTable,
+  todoistProjectLinks as linksTable,
   type Priority,
 } from "@/db";
 
 /**
- * Todoist integration (API v1).
+ * Todoist integration (API v1) — Todoist is the source of truth for tasks.
  *
- * Auth is a single personal API token (TODOIST_API_TOKEN) — no OAuth dance,
- * since this is a single-user app. Sync is idempotent and *structure-preserving*:
- *   - Todoist projects  -> our `projects` rows (keyed by source="todoist", external_id)
- *   - Todoist sections  -> annotated onto the task's notes
- *   - Todoist tasks     -> our `tasks` rows linked to the mapped project
- * Imported projects/tasks have no role yet; you (or the AI) assign one later.
+ * Our `tasks` table is a *mirror* keyed by Todoist id (external_id). The CoS
+ * reads/creates/updates/completes tasks in Todoist; it does not become a
+ * separate task manager.
+ *
+ * Todoist projects do NOT auto-create CoS projects. Instead `todoist_project_links`
+ * maps a Todoist project -> a CoS role/project. Until a mapping exists, a mirrored
+ * task carries its raw todoist_project_id (and keeps its list/section in notes for
+ * context) but has no role/project. The CoS suggests mappings in conversation.
  */
 
 const PROVIDER = "Todoist";
@@ -86,113 +89,91 @@ async function fetchActiveTasks(token: string): Promise<TodoistTask[]> {
 }
 
 export type TodoistSyncResult = {
-  projectsImported: number;
   imported: number;
   updated: number;
   closed: number;
+  linkedToRole: number;
   total: number;
 };
 
-/** Pull Todoist projects + tasks into our DB, idempotently and structure-preserving. */
+/** Mirror active Todoist tasks into our DB. Idempotent, mapping-aware. */
 export async function syncTodoist(): Promise<TodoistSyncResult> {
   const token = todoistToken();
   if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
 
-  const result: TodoistSyncResult = {
-    projectsImported: 0,
-    imported: 0,
-    updated: 0,
-    closed: 0,
-    total: 0,
-  };
+  const result: TodoistSyncResult = { imported: 0, updated: 0, closed: 0, linkedToRole: 0, total: 0 };
 
   try {
-    const [remoteProjects, remoteSections, remoteTasks] = await Promise.all([
+    const [projects, sections, remoteTasks] = await Promise.all([
       paginate<TodoistProject>(token, "projects"),
       paginate<TodoistSection>(token, "sections"),
       fetchActiveTasks(token),
     ]);
+    const projName = new Map(projects.map((p) => [p.id, p.name]));
+    const secName = new Map(sections.map((s) => [s.id, s.name]));
 
-    // --- Projects: upsert, build todoist project id -> our project id map ---
-    const existingProjects = await db
-      .select()
-      .from(projectsTable)
-      .where(eq(projectsTable.source, "todoist"));
-    const projByExternal = new Map(existingProjects.map((p) => [p.externalId, p]));
-    const remoteProjectIds = new Set(remoteProjects.map((p) => p.id));
-    const projectIdMap = new Map<string, string>(); // todoist id -> our id
+    // Mapping layer: todoist project id -> CoS role/project (may be empty).
+    const links = await db.select().from(linksTable);
+    const linkMap = new Map(links.map((l) => [l.todoistProjectId, l]));
 
-    for (const p of remoteProjects) {
-      if (p.is_deleted) continue;
-      const prior = projByExternal.get(p.id);
-      if (prior) {
-        await db
-          .update(projectsTable)
-          .set({ name: p.name.slice(0, 200), status: "active", updatedAt: new Date() })
-          .where(eq(projectsTable.id, prior.id));
-        projectIdMap.set(p.id, prior.id);
-      } else {
-        const [created] = await db
-          .insert(projectsTable)
-          .values({ name: p.name.slice(0, 200), status: "active", source: "todoist", externalId: p.id })
-          .returning();
-        projectIdMap.set(p.id, created.id);
-        result.projectsImported++;
-      }
-    }
-    // Projects removed in Todoist → archive ours.
-    for (const ep of existingProjects) {
-      if (ep.externalId && !remoteProjectIds.has(ep.externalId) && ep.status !== "archived") {
-        await db
-          .update(projectsTable)
-          .set({ status: "archived", updatedAt: new Date() })
-          .where(eq(projectsTable.id, ep.id));
-      }
-    }
+    // Cleanup: remove CoS projects auto-created by the previous (reverted)
+    // approach. Going forward, CoS projects are curated, not imported.
+    // Tasks referencing them get project_id nulled via the FK (on delete set null).
+    await db.delete(projectsTable).where(eq(projectsTable.source, "todoist"));
 
-    const sectionName = new Map(remoteSections.map((s) => [s.id, s.name]));
-
-    // --- Tasks: upsert, linked to mapped project, section noted ---
     result.total = remoteTasks.length;
-    const existingTasks = await db
-      .select()
-      .from(tasksTable)
-      .where(eq(tasksTable.source, "todoist"));
-    const taskByExternal = new Map(existingTasks.map((t) => [t.externalId, t]));
-    const remoteTaskIds = new Set(remoteTasks.map((t) => t.id));
+    const existing = await db.select().from(tasksTable).where(eq(tasksTable.source, "todoist"));
+    const byExternal = new Map(existing.map((t) => [t.externalId, t]));
+    const remoteIds = new Set(remoteTasks.map((t) => t.id));
 
     for (const t of remoteTasks) {
-      const ourProjectId = t.project_id ? projectIdMap.get(t.project_id) ?? null : null;
-      const section = t.section_id ? sectionName.get(t.section_id) : null;
+      const listName = t.project_id ? projName.get(t.project_id) ?? null : null;
+      const section = t.section_id ? secName.get(t.section_id) : null;
+      const link = t.project_id ? linkMap.get(t.project_id) : undefined;
+      if (link?.roleId) result.linkedToRole++;
+
       const notes =
-        [section ? `Section: ${section}` : null, t.description || null]
+        [
+          listName ? `List: ${listName}` : null,
+          section ? `Section: ${section}` : null,
+          t.description || null,
+        ]
           .filter(Boolean)
           .join("\n") || null;
 
-      const values = {
+      const base = {
         title: t.content.slice(0, 200),
         notes,
         priority: mapPriority(t.priority),
         dueDate: dueToDate(t),
         status: "open" as const,
-        projectId: ourProjectId,
         source: "todoist",
         externalId: t.id,
+        todoistProjectId: t.project_id ?? null,
         updatedAt: new Date(),
       };
-      const prior = taskByExternal.get(t.id);
+
+      const prior = byExternal.get(t.id);
       if (prior) {
-        await db.update(tasksTable).set(values).where(eq(tasksTable.id, prior.id));
+        // Preserve any manual role/project assignment unless a link dictates one.
+        const upd = link
+          ? { ...base, roleId: link.roleId, projectId: link.projectId }
+          : base;
+        await db.update(tasksTable).set(upd).where(eq(tasksTable.id, prior.id));
         result.updated++;
       } else {
-        await db.insert(tasksTable).values(values);
+        await db.insert(tasksTable).values({
+          ...base,
+          roleId: link?.roleId ?? null,
+          projectId: link?.projectId ?? null,
+        });
         result.imported++;
       }
     }
 
     // Tasks removed/completed in Todoist → complete ours.
-    for (const e of existingTasks) {
-      if (e.status === "open" && e.externalId && !remoteTaskIds.has(e.externalId)) {
+    for (const e of existing) {
+      if (e.status === "open" && e.externalId && !remoteIds.has(e.externalId)) {
         await db
           .update(tasksTable)
           .set({ status: "completed", completedAt: new Date(), updatedAt: new Date() })

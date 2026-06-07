@@ -11,6 +11,7 @@ import {
   decisions,
   checkins,
   checkinRoleScores,
+  roleAttentionEvents,
 } from "@/db";
 import { generateBriefing } from "@/lib/briefing";
 import { todayStr } from "@/lib/dates";
@@ -87,6 +88,32 @@ export async function markRoleAttention(fd: FormData) {
     .where(eq(roles.id, id));
   revalidatePath("/roles");
   revalidatePath(`/roles/${id}`);
+}
+
+/**
+ * Log a typed attention event for a role (backstage manual entry).
+ * In Phase 2 the Chief of Staff creates these automatically from chat; this
+ * form exists so the mechanism is testable and manually correctable.
+ */
+export async function logAttentionEvent(fd: FormData) {
+  const roleId = str(fd, "roleId");
+  await db.insert(roleAttentionEvents).values({
+    roleId,
+    projectId: strOrNull(fd, "projectId"),
+    attentionType: (str(fd, "attentionType") || "focused_work") as never,
+    durationMinutes: intOrNull(fd, "durationMinutes"),
+    notes: strOrNull(fd, "notes"),
+    source: "manual",
+  });
+  // Logging attention refreshes the role's meaningful-attention marker.
+  await db
+    .update(roles)
+    .set({ lastMeaningfulAttentionAt: new Date(), updatedAt: new Date() })
+    .where(eq(roles.id, roleId));
+  revalidatePath(`/roles/${roleId}`);
+  revalidatePath("/roles");
+  revalidatePath("/dashboard");
+  revalidatePath("/briefing");
 }
 
 /* ------------------------------ Projects ------------------------------ */

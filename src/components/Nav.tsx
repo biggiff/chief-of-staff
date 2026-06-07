@@ -51,7 +51,7 @@ export default function Nav() {
   );
 
   return (
-    <aside className="w-full md:w-56 shrink-0 border-b md:border-b-0 md:border-r border-neutral-200 bg-white">
+    <aside className="hidden md:flex md:flex-col md:w-56 shrink-0 border-r border-neutral-200 bg-white overflow-y-auto">
       <div className="px-4 py-4">
         <Link href="/chat" className="block">
           <div className="text-sm font-semibold tracking-tight">Scout</div>
@@ -60,16 +60,16 @@ export default function Nav() {
       </div>
 
       <nav className="px-2 pb-6">
-        <div className="md:block flex gap-1 overflow-x-auto">{PRIMARY.map((l) => link(l))}</div>
+        <div>{PRIMARY.map((l) => link(l))}</div>
 
-        <div className="hidden md:block">{sectionLabel("Overview")}</div>
-        <div className="md:block flex gap-1 overflow-x-auto">{OVERVIEW.map((l) => link(l))}</div>
+        {sectionLabel("Overview")}
+        <div>{OVERVIEW.map((l) => link(l))}</div>
 
-        <div className="hidden md:block">{sectionLabel("Backstage")}</div>
-        <div className="md:block flex gap-1 overflow-x-auto">{BACKSTAGE.map((l) => link(l, true))}</div>
+        {sectionLabel("Compass")}
+        <div>{BACKSTAGE.map((l) => link(l, true))}</div>
 
-        <p className="hidden md:block px-3 pt-3 text-[11px] leading-snug text-neutral-400">
-          Scout uses Compass to organize these records. These pages are for review,
+        <p className="px-3 pt-3 text-[11px] leading-snug text-neutral-400">
+          Scout keeps Compass updated for you. These pages are for review,
           correction, and transparency.
         </p>
       </nav>

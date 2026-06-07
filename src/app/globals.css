@@ -16,3 +16,13 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* iOS Safari auto-zooms when a focused input's font-size is < 16px.
+   Force 16px on form controls on small screens to stop the zoom-on-type. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}

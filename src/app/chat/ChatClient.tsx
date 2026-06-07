@@ -134,15 +134,8 @@ export default function ChatClient({
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-0px)] md:h-screen">
-      <header className="border-b border-neutral-200 px-5 py-3 bg-white">
-        <h1 className="text-base font-semibold">Talk to Scout</h1>
-        <p className="text-xs text-neutral-500">
-          Your Chief of Staff. Tell Scout what's going on — it maintains Compass for you.
-        </p>
-      </header>
-
-      <div className="flex-1 overflow-y-auto px-4 py-6">
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-y-auto px-4 py-5">
         <div className="mx-auto max-w-2xl space-y-4">
           {glance && <ScoutGlance glance={glance} />}
           {messages.map((m) => (

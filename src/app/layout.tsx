@@ -1,10 +1,17 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import Nav from "@/components/Nav";
+import MobileTopBar from "@/components/MobileTopBar";
 
 export const metadata: Metadata = {
-  title: "Chief of Staff",
-  description: "A personal Chief of Staff for managing life roles.",
+  title: "Scout",
+  description: "Scout — your Chief of Staff.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -14,10 +21,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen">
-        <div className="flex flex-col md:flex-row min-h-screen">
+      <body>
+        <div className="flex flex-col md:flex-row h-[100dvh] overflow-hidden">
+          <MobileTopBar />
           <Nav />
-          <main className="flex-1 min-w-0">{children}</main>
+          <main className="flex-1 min-w-0 overflow-hidden">{children}</main>
         </div>
       </body>
     </html>

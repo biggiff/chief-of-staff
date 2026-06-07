@@ -12,6 +12,8 @@ import {
   checkins,
   checkinRoleScores,
   roleAttentionEvents,
+  proposedUpdates,
+  insights,
 } from "@/db";
 import { generateBriefing } from "@/lib/briefing";
 import { todayStr } from "@/lib/dates";
@@ -265,7 +267,7 @@ export async function createDecision(fd: FormData) {
     reasoning: strOrNull(fd, "reasoning"),
     revisitDate: dateOrNull(fd, "revisitDate"),
   });
-  revalidatePath("/decisions");
+  revalidatePath("/crossroads");
 }
 
 export async function updateDecision(fd: FormData) {
@@ -282,13 +284,13 @@ export async function updateDecision(fd: FormData) {
       updatedAt: new Date(),
     })
     .where(eq(decisions.id, id));
-  revalidatePath("/decisions");
+  revalidatePath("/crossroads");
 }
 
 export async function archiveDecision(fd: FormData) {
   const id = str(fd, "id");
   await db.update(decisions).set({ status: "archived", updatedAt: new Date() }).where(eq(decisions.id, id));
-  revalidatePath("/decisions");
+  revalidatePath("/crossroads");
 }
 
 /* ------------------------------ Check-ins ----------------------------- */
@@ -349,4 +351,48 @@ export async function syncTodoistAction() {
   revalidatePath("/integrations");
   revalidatePath("/tasks");
   revalidatePath("/dashboard");
+}
+
+/* ----------------------- Review & Observations ------------------------ */
+
+export async function acceptProposal(fd: FormData) {
+  const id = str(fd, "id");
+  // Phase 2: low-confidence proposals are lightweight suggestions; accepting
+  // acknowledges them. (Structured auto-apply lands with the Phase 3 queue.)
+  await db
+    .update(proposedUpdates)
+    .set({ status: "applied", decidedAt: new Date() })
+    .where(eq(proposedUpdates.id, id));
+  revalidatePath("/review");
+}
+
+export async function rejectProposal(fd: FormData) {
+  const id = str(fd, "id");
+  await db
+    .update(proposedUpdates)
+    .set({ status: "rejected", decidedAt: new Date() })
+    .where(eq(proposedUpdates.id, id));
+  revalidatePath("/review");
+}
+
+export async function undoActivityAction(fd: FormData) {
+  const id = str(fd, "id");
+  const { undoActivity } = await import("@/lib/operator");
+  await undoActivity(id);
+  revalidatePath("/review");
+  revalidatePath("/tasks");
+  revalidatePath("/ideas");
+  revalidatePath("/dashboard");
+}
+
+export async function dismissObservation(fd: FormData) {
+  const id = str(fd, "id");
+  await db.update(insights).set({ status: "dismissed", updatedAt: new Date() }).where(eq(insights.id, id));
+  revalidatePath("/observations");
+}
+
+export async function resolveObservation(fd: FormData) {
+  const id = str(fd, "id");
+  await db.update(insights).set({ status: "resolved", updatedAt: new Date() }).where(eq(insights.id, id));
+  revalidatePath("/observations");
 }

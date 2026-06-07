@@ -95,12 +95,13 @@ function isPushback(t: string): boolean {
  */
 export async function generateChiefResponse(
   userText: string,
-  history: { role: "user" | "chief_of_staff" | "system"; content: string }[] = []
+  history: { role: "user" | "chief_of_staff" | "system"; content: string }[] = [],
+  conversationId: string | null = null
 ): Promise<ChiefResponse> {
   const { aiEnabled, generateAIResponse } = await import("./ai");
   if (aiEnabled()) {
     try {
-      return await generateAIResponse(userText, history);
+      return await generateAIResponse(userText, history, conversationId);
     } catch (err) {
       console.error("AI layer failed, falling back to rules:", err);
       const fallback = await generateRuleBasedResponse(userText);

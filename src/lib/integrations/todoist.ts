@@ -55,6 +55,73 @@ function mapPriority(p: number): Priority {
   return "low";
 }
 
+// Our priority → Todoist API priority (4 = highest).
+function writePriority(p: Priority): number {
+  return p === "high" ? 4 : p === "medium" ? 3 : 1;
+}
+
+export type CreatedTodoistTask = {
+  id: string;
+  content: string;
+  project_id?: string | null;
+  priority: number;
+  due?: { date?: string; datetime?: string } | null;
+};
+
+/** Create a task in Todoist (source of truth). Returns the created task. */
+export async function createTodoistTask(input: {
+  content: string;
+  priority?: Priority;
+  dueString?: string | null;
+  projectId?: string | null;
+}): Promise<CreatedTodoistTask> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const body: Record<string, unknown> = { content: input.content };
+  if (input.priority) body.priority = writePriority(input.priority);
+  if (input.dueString) body.due_string = input.dueString;
+  if (input.projectId) body.project_id = input.projectId;
+  const res = await fetch(`${API}/tasks`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Todoist create ${res.status}: ${t.slice(0, 200)}`);
+  }
+  return (await res.json()) as CreatedTodoistTask;
+}
+
+async function taskAction(id: string, action: "close" | "reopen"): Promise<void> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const res = await fetch(`${API}/tasks/${id}/${action}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 204) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Todoist ${action} ${res.status}: ${t.slice(0, 200)}`);
+  }
+}
+
+export const closeTodoistTask = (id: string) => taskAction(id, "close");
+export const reopenTodoistTask = (id: string) => taskAction(id, "reopen");
+
+export async function deleteTodoistTask(id: string): Promise<void> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const res = await fetch(`${API}/tasks/${id}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 204) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Todoist delete ${res.status}: ${t.slice(0, 200)}`);
+  }
+}
+
 function dueToDate(t: TodoistTask): Date | null {
   const raw = t.due?.datetime || t.due?.date;
   return raw ? new Date(raw) : null;

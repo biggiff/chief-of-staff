@@ -1,12 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { and, eq, isNull, desc } from "drizzle-orm";
+import { and, eq, isNull, ilike } from "drizzle-orm";
 import {
   db,
   roles as rolesTable,
   projects as projectsTable,
   tasks as tasksTable,
   ideas as ideasTable,
+  proposedUpdates as proposedUpdatesTable,
   type Role,
+  type AttentionType,
 } from "@/db";
 import {
   scoreRoles,
@@ -15,71 +17,69 @@ import {
   generateBriefing,
   briefingToText,
 } from "./briefing";
+import {
+  activeRoles,
+  matchRole,
+  findOpenTask,
+  logAttention,
+  createTask,
+  completeTask,
+  createIdea,
+  reassign,
+  recordPushback,
+  saveCheckin,
+  undoLast,
+} from "./operator";
 import { formatDate } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
 /**
- * Real AI layer for the Chief of Staff.
+ * Scout — the conversational Chief of Staff. Scout reasons over Compass (the
+ * structured system of roles, projects, tasks, attention, decisions/crossroads,
+ * and observations) and maintains it through conversation via tools.
  *
- * The rule-based scoring engine remains the auditable backbone: the model is
- * given the *current structured state* (roles, attention scores, latest
- * briefing) in its system prompt, and all state-changing actions go through
- * deterministic tools (create task/idea, generate briefing, record pushback) —
- * never free-form. The model's job is interpretation and conversation, not
- * inventing facts.
- *
- * Falls back to the rule-based engine when no ANTHROPIC_API_KEY is configured.
+ * Confidence policy: HIGH → act + confirm briefly; MEDIUM → ask one quick
+ * confirmation; LOW → never write, queue a proposed update or suggest. Every
+ * write is logged and undoable. Falls back to the rule engine with no API key.
  */
 
 export function aiEnabled(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
 }
 
-// Opus 4.8 is the default per Anthropic guidance. Override with COS_AI_MODEL
-// (e.g. "claude-sonnet-4-6" or "claude-haiku-4-5") for lower cost/latency.
 const MODEL = process.env.COS_AI_MODEL || "claude-opus-4-8";
 
-const SYSTEM_PROMPT = `You are the user's personal Chief of Staff. You help them manage multiple life roles, decide where their attention should go, reduce decision fatigue, and notice avoidance patterns.
+const SYSTEM_PROMPT = `You are Scout, the user's personal Chief of Staff. You reason over a structured system called Compass — the user's roles, projects, tasks, attention history, decisions (called "Crossroads"), and observations. The conversation is the product; Compass exists to support it. Your job is to interpret the user's life, recommend where attention should go, AND maintain Compass for them so they rarely need to open forms.
 
-Voice and behavior:
-- Direct, concise, useful. No fluffy encouragement, no generic productivity advice.
-- Interpret role *health* — don't just repeat task lists.
-- Distinguish urgency from strategic importance. Surface neglected roles, not just overdue tasks.
-- A role can be operationally fine but relationally or strategically neglected — say so.
-- Recommend ONE next 15-minute action when the user needs direction.
-- When you recommend something, make it auditable: cite the reasoning from the briefing/scores.
-- When the user pushes back on a role ("I don't want to work on X"), acknowledge it, offer a lower-friction alternative, but keep the role flagged and record the avoidance via the tool. Don't let them fully off the hook.
-- If the user is overwhelmed, shrink the day to one thing.
-- Keep replies short — a few sentences or tight bullets. This is a text-message interface.
+Voice: direct, concise, useful. No fluffy encouragement, no generic productivity advice. Interpret role *health*, not just task lists. Distinguish urgency from strategic importance. Surface neglected roles. Recommend one next 15-minute action when direction is needed.
 
-Tools — use them, never fabricate:
-- Use get_or_generate_briefing for "what's on tap today?" / what to focus on.
-- Use create_task / create_idea to capture things the user wants saved.
-- Use record_role_pushback when the user resists a role, so the avoidance is tracked.
-You already receive the current structured state below; rely on it instead of guessing. Only the listed roles exist — match role names to that list.`;
+You maintain Compass with tools. Apply this confidence policy strictly:
+- HIGH confidence (the user clearly states a fact or request): act immediately, then confirm in ONE short line. Examples: "I spent an hour on PTO" → log_attention; "add idea: snack station" → create_idea; "I finished the orthodontist call" → complete_task; "add task: order shirts" → create_task; "that's a Parent thing" → reassign.
+- MEDIUM confidence (vague or ongoing, not a clear instruction): ask ONE quick confirmation before writing. Examples: "I've been thinking about Doughrway a lot" → "Want me to log thinking time on Founder, or start a Doughrway project?"
+- LOW confidence (you're inferring something the user didn't say): do NOT write. Either suggest it, or call propose_update to queue it for review. Examples: inferred avoidance, inferred decisions, inferred role changes.
 
-async function activeRoles(): Promise<Role[]> {
-  return db.select().from(rolesTable).where(isNull(rolesTable.archivedAt));
+Attention types (pick the best fit): focused_work, progress (built/shipped something), planning, thinking, relationship, maintenance, rest. "Built/worked on X" = progress or focused_work; "thought about X" = thinking; "date night / good talk with [partner]" = relationship; "cleaned / laundry / errands" = maintenance.
+
+Tasks live in Todoist (the source of truth) — create_task and complete_task go through Todoist. For complete_task, pass the user's wording as the query; if the match is unclear, ask which one.
+
+Trust rules: confirm briefly what changed; do NOT over-explain unless the user asks "why". Don't ask permission for obvious high-confidence actions. Every action is undoable ("undo that").
+
+CRITICAL: Act ONLY on the user's most recent message. Earlier messages in the conversation are context that has ALREADY been handled — never re-log attention, re-create a task/idea, or repeat any write from a prior turn. If the latest message doesn't call for a write, don't make one.
+
+When the user asks "why" you recommended something, answer from the Compass state below (role health, recent attention, open/overdue tasks, projects, check-ins). Use the term "Compass" naturally ("Compass shows…"). Only the roles listed below exist — match role names to that list.`;
+
+async function focusRoleName(focusRoleId: string | null | undefined, roles: Role[]): Promise<string | null> {
+  if (!focusRoleId) return null;
+  return roles.find((r) => r.id === focusRoleId)?.name ?? null;
 }
 
-function matchRole(name: string | undefined, roles: Role[]): Role | null {
-  if (!name) return null;
-  const lower = name.toLowerCase().trim();
-  return (
-    roles.find((r) => r.name.toLowerCase() === lower) ||
-    roles.find((r) => r.name.toLowerCase().includes(lower)) ||
-    roles.find((r) => lower.includes(r.name.toLowerCase())) ||
-    null
-  );
-}
-
-/** Snapshot of current state for the system prompt — the structured memory. */
+/** Snapshot of current Compass state for Scout's system prompt. */
 async function buildContext(): Promise<string> {
   const scored = await scoreRoles();
   const briefing = await getLatestBriefing();
 
   const lines: string[] = [];
-  lines.push("CURRENT STATE (computed by the rule-based engine):");
+  lines.push("COMPASS STATE (computed by the rule-based engine):");
   lines.push("");
   lines.push("Roles, ranked by attention score (higher = needs attention more):");
   for (const s of scored) {
@@ -90,17 +90,14 @@ async function buildContext(): Promise<string> {
       `open_tasks=${s.openTaskCount}`,
     ];
     if (s.overdueHighPriorityCount > 0) bits.push(`overdue_high=${s.overdueHighPriorityCount}`);
-    if (s.stalledProjectCount > 0) bits.push(`stalled_projects=${s.stalledProjectCount}`);
-    if (s.latestHealthScore != null) bits.push(`self_rated_health=${s.latestHealthScore}/10`);
+    if (s.attentionCredit > 0) bits.push(`recent_attention_credit=${s.attentionCredit}`);
+    if (s.latestHealthScore != null) bits.push(`self_rated=${s.latestHealthScore}/10`);
     if (s.daysSinceAttention != null) bits.push(`days_since_attention=${s.daysSinceAttention}`);
-    if (s.maxAvoidanceCount >= 2) bits.push(`avoided_task="${s.topAvoidedTaskTitle}"x${s.maxAvoidanceCount}`);
+    if (s.maxAvoidanceCount >= 2) bits.push(`avoided="${s.topAvoidedTaskTitle}"x${s.maxAvoidanceCount}`);
     lines.push(`- ${s.role.name}: ${bits.join(", ")}`);
-    if (s.reasons.length) {
-      lines.push(`    reasons: ${s.reasons.map((r) => `${r.label} (+${r.points})`).join("; ")}`);
-    }
   }
 
-  // Unassigned open tasks (e.g. synced from Todoist, no role yet), grouped by project.
+  // Unassigned open tasks (synced from Todoist, no role yet), grouped by list.
   const unassigned = await db
     .select()
     .from(tasksTable)
@@ -115,27 +112,23 @@ async function buildContext(): Promise<string> {
       groups.get(key)!.push(t);
     }
     lines.push("");
-    lines.push(`Unassigned open tasks (${unassigned.length}) — not tied to a role yet, grouped by list/project:`);
+    lines.push(`Unassigned open tasks (${unassigned.length}), grouped by list/project:`);
     for (const [group, items] of groups) {
       lines.push(`  ${group} (${items.length}):`);
-      for (const t of items.slice(0, 8)) {
+      for (const t of items.slice(0, 6)) {
         const due = t.dueDate ? ` (due ${formatDate(t.dueDate)})` : "";
-        lines.push(`    - ${t.title}${due} priority=${t.priority}`);
+        lines.push(`    - ${t.title}${due}`);
       }
-      if (items.length > 8) lines.push(`    …and ${items.length - 8} more`);
+      if (items.length > 6) lines.push(`    …and ${items.length - 6} more`);
     }
-    lines.push("If the user implies which role a list belongs to, suggest filing the whole list under it.");
   }
 
-  // Today's calendar — real time pressure for the briefing.
   try {
-    const { calendarEnabled, listTodaysEvents, formatEvents } = await import(
-      "./integrations/google-calendar"
-    );
+    const { calendarEnabled, listTodaysEvents, formatEvents } = await import("./integrations/google-calendar");
     if (calendarEnabled()) {
       const events = await listTodaysEvents();
       lines.push("");
-      lines.push(`Today's calendar (${events.length} event${events.length === 1 ? "" : "s"}):`);
+      lines.push(`Today's calendar (${events.length}):`);
       lines.push(formatEvents(events));
     }
   } catch (err) {
@@ -144,14 +137,8 @@ async function buildContext(): Promise<string> {
 
   if (briefing) {
     lines.push("");
-    lines.push(`Latest briefing (${formatDate(briefing.briefingDate)}):`);
-    if (briefing.summary) lines.push(`  summary: ${briefing.summary}`);
-    if (briefing.whyThis) lines.push(`  why_this: ${briefing.whyThis.replace(/\n/g, " | ")}`);
-    if (briefing.next15MinuteAction) lines.push(`  next_action: ${briefing.next15MinuteAction}`);
-    if (briefing.safeToIgnore) lines.push(`  safe_to_ignore: ${briefing.safeToIgnore}`);
-  } else {
-    lines.push("");
-    lines.push("No briefing generated yet today — use get_or_generate_briefing if the user asks what to focus on.");
+    lines.push(`Latest briefing (${formatDate(briefing.briefingDate)}): ${briefing.summary ?? ""}`);
+    if (briefing.whyThis) lines.push(`  why: ${briefing.whyThis.replace(/\n/g, " | ")}`);
   }
 
   return lines.join("\n");
@@ -160,197 +147,288 @@ async function buildContext(): Promise<string> {
 const TOOLS: Anthropic.Tool[] = [
   {
     name: "get_or_generate_briefing",
-    description:
-      "Get today's daily briefing (focus role + reasoning + next action). Generates it from current state if one doesn't exist yet. Pass regenerate=true to force a fresh recompute.",
+    description: "Get today's briefing (focus role + reasoning + next action). Generates from Compass if none exists today. regenerate=true forces a fresh recompute (use after logging attention).",
+    input_schema: { type: "object", properties: { regenerate: { type: "boolean" } } },
+  },
+  {
+    name: "log_attention",
+    description: "Log time/energy the user gave to a role. HIGH-confidence statements like 'I spent an hour on PTO' or 'great date night with Mandy'.",
     input_schema: {
       type: "object",
       properties: {
-        regenerate: { type: "boolean", description: "Force a fresh briefing even if today's exists." },
+        role_name: { type: "string", description: "Existing role name." },
+        attention_type: { type: "string", enum: ["focused_work", "progress", "planning", "thinking", "relationship", "maintenance", "rest"] },
+        duration_minutes: { type: "number" },
+        project_name: { type: "string" },
+        notes: { type: "string" },
       },
+      required: ["role_name", "attention_type"],
     },
   },
   {
     name: "create_task",
-    description: "Save a task the user wants to track. Infer the role from their message when obvious.",
+    description: "Create a task in Todoist (the source of truth) and mirror it in Compass. Infer the role when obvious.",
     input_schema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Short task title." },
-        role_name: { type: "string", description: "One of the existing role names, if applicable." },
+        title: { type: "string" },
+        role_name: { type: "string" },
         priority: { type: "string", enum: ["low", "medium", "high"] },
-        notes: { type: "string" },
+        due_string: { type: "string", description: "Natural-language due date e.g. 'tomorrow', 'friday'." },
       },
       required: ["title"],
     },
   },
   {
+    name: "complete_task",
+    description: "Complete a task the user says they finished. Pass their wording as query; it fuzzy-matches an open task and closes it in Todoist. If the match is unclear, you'll get candidates back — ask which one.",
+    input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
     name: "create_idea",
-    description: "Capture an idea for later. Nothing demands action; it will resurface.",
+    description: "Capture an idea for later. Nothing demands action.",
+    input_schema: {
+      type: "object",
+      properties: { title: { type: "string" }, role_name: { type: "string" }, notes: { type: "string" } },
+      required: ["title"],
+    },
+  },
+  {
+    name: "reassign",
+    description: "Move a task or idea to a different role/project, e.g. 'that's actually a Parent thing'. Pass the user's wording as query.",
     input_schema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Short idea title." },
-        role_name: { type: "string", description: "One of the existing role names, if applicable." },
-        notes: { type: "string" },
+        item_type: { type: "string", enum: ["task", "idea"] },
+        query: { type: "string" },
+        role_name: { type: "string" },
+        project_name: { type: "string" },
       },
-      required: ["title"],
+      required: ["item_type", "query"],
+    },
+  },
+  {
+    name: "save_checkin",
+    description: "Save a quick check-in after you've asked the user: energy 1-10, overwhelm 1-10, biggest win, biggest concern, what they're avoiding. Call once you have their answers.",
+    input_schema: {
+      type: "object",
+      properties: {
+        energy: { type: "number" },
+        overwhelm: { type: "number" },
+        win: { type: "string" },
+        concern: { type: "string" },
+        avoiding: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "record_pushback",
+    description: "The user is resisting a role today. Keeps it flagged and records avoidance. Acknowledge and offer a lower-friction alternative.",
+    input_schema: { type: "object", properties: { role_name: { type: "string" } }, required: ["role_name"] },
+  },
+  {
+    name: "undo_last",
+    description: "Undo the most recent reversible action ('undo that', 'that was wrong').",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "propose_update",
+    description: "For LOW-confidence inferences you should NOT write directly (inferred avoidance, decisions/crossroads, role changes, projects). Queues a proposed update for the user to review.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string" },
+        summary: { type: "string", description: "Human-readable description of the proposed change." },
+        confidence: { type: "string", enum: ["low", "medium"] },
+      },
+      required: ["kind", "summary"],
     },
   },
   {
     name: "get_todoist_tasks",
-    description:
-      "Fetch the user's current active Todoist tasks live (read-only). Use when they ask what's on their Todoist / actual to-do list, or to ground a recommendation in real tasks.",
+    description: "Fetch the user's current active Todoist tasks live (read-only), grouped by list.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "get_calendar_today",
-    description:
-      "Fetch today's Google Calendar events (read-only). Use to ground the day in real time pressure — e.g. when the user asks what their day looks like or whether they have time for something.",
+    description: "Fetch today's Google Calendar events (read-only).",
     input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "record_role_pushback",
-    description:
-      "Record that the user is resisting/avoiding a role today. Keeps the role flagged and increments avoidance on its most-skipped task so the pattern is tracked. Call this whenever the user pushes back on a recommended role.",
-    input_schema: {
-      type: "object",
-      properties: {
-        role_name: { type: "string", description: "The role the user is pushing back on." },
-      },
-      required: ["role_name"],
-    },
   },
 ];
 
-async function runTool(name: string, input: Record<string, unknown>): Promise<string> {
+async function resolveProjectId(roleId: string | null, projectName?: string): Promise<string | null> {
+  if (!projectName || !roleId) return null;
+  const [p] = await db
+    .select()
+    .from(projectsTable)
+    .where(and(eq(projectsTable.roleId, roleId), ilike(projectsTable.name, `%${projectName}%`)))
+    .limit(1);
+  return p?.id ?? null;
+}
+
+async function runTool(
+  name: string,
+  input: Record<string, unknown>,
+  conversationId: string | null
+): Promise<string> {
   const roles = await activeRoles();
+  const j = (o: unknown) => JSON.stringify(o);
 
   if (name === "get_or_generate_briefing") {
     const briefing = input.regenerate ? await generateBriefing() : await getOrCreateTodaysBriefing();
-    const focus = briefing.focusRoleId
-      ? roles.find((r) => r.id === briefing.focusRoleId)?.name ?? null
-      : null;
+    const focus = await focusRoleName(briefing.focusRoleId, roles);
     return briefingToText(briefing, focus);
+  }
+
+  if (name === "log_attention") {
+    const role = matchRole(input.role_name as string, roles);
+    if (!role) return j({ ok: false, error: "No matching role.", roles: roles.map((r) => r.name) });
+    const projectId = await resolveProjectId(role.id, input.project_name as string | undefined);
+    const { summary } = await logAttention({
+      role,
+      attentionType: (input.attention_type as AttentionType) ?? "focused_work",
+      durationMinutes: (input.duration_minutes as number) ?? null,
+      projectId,
+      notes: (input.notes as string) ?? null,
+      conversationId,
+    });
+    return j({ ok: true, summary });
   }
 
   if (name === "create_task") {
     const role = matchRole(input.role_name as string | undefined, roles);
-    let projectId: string | null = null;
-    if (role) {
-      const projs = await db
-        .select()
-        .from(projectsTable)
-        .where(and(eq(projectsTable.roleId, role.id), eq(projectsTable.status, "active")));
-      const title = (input.title as string).toLowerCase();
-      projectId = projs.find((p) => title.includes(p.name.toLowerCase()))?.id ?? null;
-    }
-    const [task] = await db
-      .insert(tasksTable)
-      .values({
-        title: (input.title as string).slice(0, 200),
-        notes: (input.notes as string) ?? null,
-        roleId: role?.id ?? null,
-        projectId,
-        priority: ((input.priority as string) || "medium") as never,
-        status: "open",
-      })
-      .returning();
-    return JSON.stringify({
-      ok: true,
-      task_id: task.id,
-      role: role?.name ?? null,
-      needs_role: !role,
+    const { task, summary } = await createTask({
+      title: input.title as string,
+      role,
+      priority: (input.priority as "low" | "medium" | "high") ?? "medium",
+      dueString: (input.due_string as string) ?? null,
+      conversationId,
     });
+    return j({ ok: true, summary, taskId: task.id, needsRole: !role });
+  }
+
+  if (name === "complete_task") {
+    const { best, confident, candidates } = await findOpenTask(input.query as string);
+    if (!best) return j({ ok: false, error: "No open task matched.", query: input.query });
+    if (!confident) {
+      return j({ ok: false, needsClarification: true, candidates: candidates.map((c) => c.task.title) });
+    }
+    const { summary } = await completeTask({ task: best, conversationId });
+    return j({ ok: true, summary });
   }
 
   if (name === "create_idea") {
     const role = matchRole(input.role_name as string | undefined, roles);
-    const [idea] = await db
-      .insert(ideasTable)
+    const { summary } = await createIdea({
+      title: input.title as string,
+      notes: (input.notes as string) ?? null,
+      role,
+      conversationId,
+    });
+    return j({ ok: true, summary });
+  }
+
+  if (name === "reassign") {
+    const role = matchRole(input.role_name as string | undefined, roles);
+    let entityId: string | null = null;
+    const query = (input.query as string) ?? "";
+    if (input.item_type === "idea") {
+      const [idea] = await db
+        .select()
+        .from(ideasTable)
+        .where(ilike(ideasTable.title, `%${query}%`))
+        .limit(1);
+      entityId = idea?.id ?? null;
+    } else {
+      const { best } = await findOpenTask(query);
+      entityId = best?.id ?? null;
+    }
+    if (!entityId) return j({ ok: false, error: "Couldn't find that item." });
+    const projectId = await resolveProjectId(role?.id ?? null, input.project_name as string | undefined);
+    const { summary } = await reassign({
+      entityTable: input.item_type === "idea" ? "ideas" : "tasks",
+      entityId,
+      role,
+      projectId,
+      conversationId,
+    });
+    return j({ ok: true, summary });
+  }
+
+  if (name === "save_checkin") {
+    const { summary } = await saveCheckin({
+      energy: (input.energy as number) ?? null,
+      overwhelm: (input.overwhelm as number) ?? null,
+      win: (input.win as string) ?? null,
+      concern: (input.concern as string) ?? null,
+      avoiding: (input.avoiding as string) ?? null,
+      conversationId,
+    });
+    return j({ ok: true, summary });
+  }
+
+  if (name === "record_pushback") {
+    const role = matchRole(input.role_name as string, roles);
+    if (!role) return j({ ok: false, error: "No matching role." });
+    const { skipped } = await recordPushback({ role, conversationId });
+    return j({ ok: true, role: role.name, flaggedKept: true, avoidedTask: skipped?.title ?? null });
+  }
+
+  if (name === "undo_last") {
+    const res = await undoLast();
+    return j(res);
+  }
+
+  if (name === "propose_update") {
+    const [row] = await db
+      .insert(proposedUpdatesTable)
       .values({
-        title: (input.title as string).slice(0, 200),
-        notes: (input.notes as string) ?? (input.title as string),
-        roleId: role?.id ?? null,
-        status: "captured",
+        conversationId,
+        kind: input.kind as string,
+        summary: input.summary as string,
+        confidence: ((input.confidence as string) ?? "low") as never,
+        status: "pending",
       })
       .returning();
-    return JSON.stringify({ ok: true, idea_id: idea.id, role: role?.name ?? null });
+    return j({ ok: true, queued: true, proposalId: row.id });
   }
 
   if (name === "get_todoist_tasks") {
     const { listTodoistTasks, todoistEnabled } = await import("./integrations/todoist");
-    if (!todoistEnabled()) {
-      return JSON.stringify({ ok: false, error: "Todoist not connected (no TODOIST_API_TOKEN)." });
-    }
+    if (!todoistEnabled()) return j({ ok: false, error: "Todoist not connected." });
     const items = await listTodoistTasks();
-    return JSON.stringify({ ok: true, count: items.length, tasks: items });
+    return j({ ok: true, count: items.length, tasks: items });
   }
 
   if (name === "get_calendar_today") {
-    const { calendarEnabled, listTodaysEvents, formatEvents } = await import(
-      "./integrations/google-calendar"
-    );
-    if (!calendarEnabled()) {
-      return JSON.stringify({ ok: false, error: "Google Calendar not connected." });
-    }
+    const { calendarEnabled, listTodaysEvents, formatEvents } = await import("./integrations/google-calendar");
+    if (!calendarEnabled()) return j({ ok: false, error: "Google Calendar not connected." });
     const events = await listTodaysEvents();
-    return JSON.stringify({ ok: true, count: events.length, summary: formatEvents(events) });
+    return j({ ok: true, count: events.length, summary: formatEvents(events) });
   }
 
-  if (name === "record_role_pushback") {
-    const role = matchRole(input.role_name as string | undefined, roles);
-    if (!role) return JSON.stringify({ ok: false, error: "No matching role." });
-    const [skipped] = await db
-      .select()
-      .from(tasksTable)
-      .where(and(eq(tasksTable.roleId, role.id), eq(tasksTable.status, "open")))
-      .orderBy(desc(tasksTable.avoidanceCount))
-      .limit(1);
-    if (skipped) {
-      await db
-        .update(tasksTable)
-        .set({ avoidanceCount: skipped.avoidanceCount + 1, updatedAt: new Date() })
-        .where(eq(tasksTable.id, skipped.id));
-    }
-    return JSON.stringify({
-      ok: true,
-      role: role.name,
-      flagged_kept: true,
-      avoided_task: skipped?.title ?? null,
-      new_avoidance_count: skipped ? skipped.avoidanceCount + 1 : null,
-    });
-  }
-
-  return JSON.stringify({ ok: false, error: `Unknown tool ${name}` });
+  return j({ ok: false, error: `Unknown tool ${name}` });
 }
 
 export type HistoryMsg = { role: "user" | "chief_of_staff" | "system"; content: string };
 
-/** Generate a response using Claude with tool use. Throws on API error. */
 export async function generateAIResponse(
   userText: string,
-  history: HistoryMsg[] = []
+  history: HistoryMsg[] = [],
+  conversationId: string | null = null
 ): Promise<ChiefResponse> {
   const client = new Anthropic();
   const context = await buildContext();
 
   const priorTurns: Anthropic.MessageParam[] = history
     .filter((m) => m.role === "user" || m.role === "chief_of_staff")
-    .slice(-10)
-    .map((m) => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: m.content,
-    }));
+    .slice(-12)
+    .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
 
-  const messages: Anthropic.MessageParam[] = [
-    ...priorTurns,
-    { role: "user", content: userText },
-  ];
-
+  const messages: Anthropic.MessageParam[] = [...priorTurns, { role: "user", content: userText }];
   const toolsUsed: string[] = [];
 
-  // Manual agentic loop — bounded so a misbehaving model can't spin forever.
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2048,
@@ -365,7 +443,7 @@ export async function generateAIResponse(
       for (const block of response.content) {
         if (block.type === "tool_use") {
           toolsUsed.push(block.name);
-          const result = await runTool(block.name, block.input as Record<string, unknown>);
+          const result = await runTool(block.name, block.input as Record<string, unknown>, conversationId);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
         }
       }
@@ -379,14 +457,9 @@ export async function generateAIResponse(
       .map((b) => b.text)
       .join("\n")
       .trim();
-
-    return {
-      content: text || "…",
-      metadata: { engine: "ai", model: MODEL, toolsUsed },
-    };
+    return { content: text || "…", metadata: { engine: "ai", model: MODEL, toolsUsed } };
   }
 
-  // Loop exhausted — return whatever we can rather than hanging.
   return {
     content: "I worked through that but couldn't wrap it up cleanly — try rephrasing?",
     metadata: { engine: "ai", model: MODEL, toolsUsed, exhausted: true },

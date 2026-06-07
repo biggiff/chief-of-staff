@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       .returning();
 
     // Generate + save the Chief of Staff response.
-    const reply = await generateChiefResponse(content, history);
+    const reply = await generateChiefResponse(content, history, conversationId);
     const [chiefMsg] = await db
       .insert(messages)
       .values({

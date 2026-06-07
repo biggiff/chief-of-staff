@@ -23,42 +23,52 @@ const STATUS_OPTS = [
   { value: "archived", label: "Archived" },
 ];
 
-export default async function DecisionsPage() {
+export default async function CrossroadsPage() {
   const list = await db.select().from(decisions).orderBy(desc(decisions.updatedAt));
 
   return (
-    <PageShell title="Decisions" subtitle="Open questions and the reasoning behind your calls.">
+    <PageShell
+      title="Crossroads"
+      subtitle="Recurring decisions Scout tracks so you don't re-litigate them. Audit/correction view."
+    >
       <div className="mb-6">
-        <Disclosure summary="+ New decision">
+        <Disclosure summary="+ New crossroad">
           <form action={createDecision} className="grid gap-3">
             <Field label="Title" name="title" required />
             <Select label="Status" name="status" options={STATUS_OPTS} defaultValue="open" />
             <TextArea label="Description" name="description" />
-            <Field label="Decision" name="decision" />
+            <Field label="Current leaning / decision" name="decision" />
             <TextArea label="Reasoning" name="reasoning" />
             <Field label="Revisit date" name="revisitDate" type="date" />
-            <PrimaryButton>Create decision</PrimaryButton>
+            <PrimaryButton>Create crossroad</PrimaryButton>
           </form>
         </Disclosure>
       </div>
 
       <div className="grid gap-2">
-        {list.length === 0 && <p className="text-sm text-neutral-500">No decisions yet.</p>}
+        {list.length === 0 && <p className="text-sm text-neutral-500">No crossroads yet.</p>}
         {list.map((d) => (
           <Card key={d.id}>
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="font-medium text-sm">{d.title}</div>
-                {d.revisitDate && (
-                  <div className="text-xs text-neutral-500">Revisit {formatDate(d.revisitDate)}</div>
-                )}
+                <div className="text-xs text-neutral-500">
+                  {d.revisitCount > 0 ? `Revisited ${d.revisitCount}× · ` : ""}
+                  {d.latestDiscussedAt ? `last discussed ${formatDate(d.latestDiscussedAt)}` : ""}
+                  {d.revisitDate ? ` · revisit ${formatDate(d.revisitDate)}` : ""}
+                </div>
               </div>
               <Badge value={d.status} />
             </div>
             {d.description && <p className="text-sm text-neutral-600 mt-2">{d.description}</p>}
-            {d.decision && (
+            {(d.currentLeaning || d.decision) && (
               <p className="text-sm mt-2">
-                <span className="font-medium">Decision:</span> {d.decision}
+                <span className="font-medium">Leaning:</span> {d.currentLeaning || d.decision}
+              </p>
+            )}
+            {d.unresolvedConcerns && (
+              <p className="text-sm text-neutral-600 mt-1">
+                <span className="font-medium text-neutral-800">Unresolved:</span> {d.unresolvedConcerns}
               </p>
             )}
             {d.reasoning && (
@@ -74,7 +84,7 @@ export default async function DecisionsPage() {
                   <Field label="Title" name="title" defaultValue={d.title} required />
                   <Select label="Status" name="status" options={STATUS_OPTS} defaultValue={d.status} />
                   <TextArea label="Description" name="description" defaultValue={d.description} />
-                  <Field label="Decision" name="decision" defaultValue={d.decision} />
+                  <Field label="Current leaning / decision" name="decision" defaultValue={d.decision} />
                   <TextArea label="Reasoning" name="reasoning" defaultValue={d.reasoning} />
                   <Field label="Revisit date" name="revisitDate" type="date" defaultValue={d.revisitDate ? d.revisitDate.toISOString().slice(0, 10) : ""} />
                   <PrimaryButton>Save</PrimaryButton>

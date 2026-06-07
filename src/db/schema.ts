@@ -85,6 +85,9 @@ export const tasks = pgTable("tasks", {
   estimatedMinutes: integer("estimated_minutes"),
   avoidanceCount: integer("avoidance_count").notNull().default(0),
   completedAt: timestamp("completed_at", { withTimezone: true }),
+  // Provenance for synced tasks (e.g. "todoist"). Null = created in-app.
+  source: text("source"),
+  externalId: text("external_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

@@ -100,6 +100,22 @@ async function buildContext(): Promise<string> {
     }
   }
 
+  // Unassigned open tasks (e.g. freshly synced from Todoist, no role yet).
+  const unassigned = await db
+    .select()
+    .from(tasksTable)
+    .where(and(isNull(tasksTable.roleId), eq(tasksTable.status, "open")));
+  if (unassigned.length) {
+    lines.push("");
+    lines.push(`Unassigned open tasks (${unassigned.length}) — not yet tied to a role:`);
+    for (const t of unassigned.slice(0, 12)) {
+      const src = t.source ? ` [${t.source}]` : "";
+      const due = t.dueDate ? ` (due ${formatDate(t.dueDate)})` : "";
+      lines.push(`- ${t.title}${due} priority=${t.priority}${src}`);
+    }
+    lines.push("If the user implies which role one belongs to, you can re-file it with create_task or suggest a role.");
+  }
+
   if (briefing) {
     lines.push("");
     lines.push(`Latest briefing (${formatDate(briefing.briefingDate)}):`);
@@ -153,6 +169,12 @@ const TOOLS: Anthropic.Tool[] = [
       },
       required: ["title"],
     },
+  },
+  {
+    name: "get_todoist_tasks",
+    description:
+      "Fetch the user's current active Todoist tasks live (read-only). Use when they ask what's on their Todoist / actual to-do list, or to ground a recommendation in real tasks.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "record_role_pushback",
@@ -221,6 +243,15 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<st
       })
       .returning();
     return JSON.stringify({ ok: true, idea_id: idea.id, role: role?.name ?? null });
+  }
+
+  if (name === "get_todoist_tasks") {
+    const { listTodoistTasks, todoistEnabled } = await import("./integrations/todoist");
+    if (!todoistEnabled()) {
+      return JSON.stringify({ ok: false, error: "Todoist not connected (no TODOIST_API_TOKEN)." });
+    }
+    const items = await listTodoistTasks();
+    return JSON.stringify({ ok: true, count: items.length, tasks: items });
   }
 
   if (name === "record_role_pushback") {

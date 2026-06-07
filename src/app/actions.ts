@@ -313,3 +313,13 @@ export async function generateBriefingAction() {
   revalidatePath("/briefing");
   revalidatePath("/dashboard");
 }
+
+/* ---------------------------- Integrations ---------------------------- */
+
+export async function syncTodoistAction() {
+  const { syncTodoist } = await import("@/lib/integrations/todoist");
+  await syncTodoist();
+  revalidatePath("/integrations");
+  revalidatePath("/tasks");
+  revalidatePath("/dashboard");
+}

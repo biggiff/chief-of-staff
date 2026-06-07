@@ -52,6 +52,21 @@ export function daysSince(date: Date | null | undefined): number | null {
 
 export function formatDate(date: Date | string | null | undefined): string {
   if (!date) return "—";
+
+  // Date-only strings (DATE columns like briefing_date / checkin_date) are
+  // calendar dates, not instants. Format them literally — applying a timezone
+  // to "2026-06-07" parses it as UTC midnight and shifts it back a day.
+  if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const [y, m, d] = date.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", {
+      timeZone: "UTC",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  }
+
+  // Real instants (Date objects, timestamptz) are tz-converted to the user's zone.
   const d = typeof date === "string" ? new Date(date) : date;
   return d.toLocaleDateString("en-US", {
     timeZone: appTimeZone(),

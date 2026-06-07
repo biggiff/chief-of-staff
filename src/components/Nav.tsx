@@ -19,6 +19,7 @@ const LINKS: { href: string; label: string }[] = [
 
 export default function Nav() {
   const pathname = usePathname();
+  if (pathname === "/login") return null;
   return (
     <aside className="w-full md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-neutral-200 bg-white">
       <div className="px-4 py-4">

@@ -370,7 +370,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "get_todoist_tasks",
-    description: "Fetch the user's current active Todoist tasks live (read-only), grouped by list.",
+    description: "Fetch the user's current active Todoist tasks live (read-only), grouped by list. Always current.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "sync_todoist",
+    description:
+      "Force a full Todoist sync NOW to reconcile the Compass task mirror (imports new tasks, closes ones deleted/completed in Todoist). Use when she asks to refresh/verify/re-sync tasks, or right after she's changed things in Todoist.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -631,6 +637,17 @@ async function runTool(
     if (!todoistEnabled()) return j({ ok: false, error: "Todoist not connected." });
     const items = await listTodoistTasks(300); // return all active; don't silently truncate
     return j({ ok: true, count: items.length, tasks: items });
+  }
+
+  if (name === "sync_todoist") {
+    const { syncTodoist, todoistEnabled } = await import("./integrations/todoist");
+    if (!todoistEnabled()) return j({ ok: false, error: "Todoist not connected." });
+    try {
+      const result = await syncTodoist();
+      return j({ ok: true, ...result });
+    } catch (err) {
+      return j({ ok: false, error: err instanceof Error ? err.message : "Sync failed" });
+    }
   }
 
   if (name === "get_calendar_today") {

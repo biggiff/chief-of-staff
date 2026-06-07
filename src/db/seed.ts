@@ -104,16 +104,17 @@ async function main() {
     },
   ];
 
-  for (const r of seedRoles) {
-    const existing = await db.query.roles.findFirst({
-      where: (roles, { eq }) => eq(roles.name, r.name),
-    });
-    if (existing) {
-      console.log(`  - ${r.name} already exists, skipping`);
-      continue;
+  // Only seed roles when there are NONE. Matching by name re-creates roles the
+  // user has since renamed (caused duplicate "Parent"/"Founder"). Seeding is a
+  // first-run action; renames/edits are managed in-app afterward.
+  const anyRole = await db.query.roles.findFirst({});
+  if (anyRole) {
+    console.log("  - roles already exist, skipping role seed");
+  } else {
+    for (const r of seedRoles) {
+      await db.insert(roles).values({ ...r, currentStatus: "maintaining" });
+      console.log(`  + ${r.name}`);
     }
-    await db.insert(roles).values({ ...r, currentStatus: "maintaining" });
-    console.log(`  + ${r.name}`);
   }
 
   console.log("Seeding integration placeholders...");

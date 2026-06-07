@@ -34,6 +34,9 @@ import {
   recordPushback,
   saveCheckin,
   addWorkingAgreement,
+  getCompassOverview,
+  manageRole,
+  manageProject,
   undoLast,
 } from "./operator";
 import { formatDate } from "./dates";
@@ -75,7 +78,7 @@ When in doubt: human over professional, conversational over informative, observa
 
 const SYSTEM_PROMPT = `${SCOUT_VOICE}
 
-Behind the scenes you quietly maintain Compass (her roles, projects, tasks, attention, decisions, observations) using tools — but you talk like a friend, never like software.
+Behind the scenes you quietly maintain Compass (her roles, projects, tasks, attention, decisions, observations) using tools — but you talk like a friend, never like software. You can SEE and CHANGE every part of Compass: use get_compass_overview for the full picture (all roles + projects), and manage_role / manage_project to create, rename, re-prioritize, or archive them. If she says a role is wrong, renamed, duplicated, or missing, fix it directly — never say you can't access something in Compass. You also see the live roles ranked below.
 
 How you maintain things (confidence policy):
 - HIGH (she clearly states a fact or request): just do it, confirm in ONE short line. "spent an hour on PTO" → log_attention; "add idea: snack station" → create_idea; "finished the orthodontist call" → complete_task; "add task: order shirts" → create_task; "that's a Parent thing" → reassign.
@@ -287,6 +290,44 @@ const TOOLS: Anthropic.Tool[] = [
     name: "record_pushback",
     description: "The user is resisting a role today. Keeps it flagged and records avoidance. Acknowledge and offer a lower-friction alternative.",
     input_schema: { type: "object", properties: { role_name: { type: "string" } }, required: ["role_name"] },
+  },
+  {
+    name: "get_compass_overview",
+    description:
+      "See everything in Compass: all roles (with status, importance, open-task counts, and their projects), all active projects, and totals. Use when she asks what you know, what her roles/projects are, or you need the full picture.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "manage_role",
+    description:
+      "Create, rename/update, or archive a role. update/archive identify the role by role_name; create uses name. You can change a role's name, importance (low/medium/high), or status (thriving/healthy/maintaining/needs_attention/critical).",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["create", "update", "archive"] },
+        role_name: { type: "string", description: "Existing role to update/archive." },
+        name: { type: "string", description: "New name (create, or rename on update)." },
+        importance: { type: "string", enum: ["low", "medium", "high"] },
+        status: { type: "string", enum: ["thriving", "healthy", "maintaining", "needs_attention", "critical"] },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "manage_project",
+    description:
+      "Create, update, or archive a project. update/archive identify it by project_name; create uses name. Can set the owning role (role_name) and status (active/paused/completed/archived).",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["create", "update", "archive"] },
+        project_name: { type: "string", description: "Existing project to update/archive." },
+        name: { type: "string", description: "New name (create, or rename on update)." },
+        role_name: { type: "string" },
+        status: { type: "string", enum: ["active", "paused", "completed", "archived"] },
+      },
+      required: ["action"],
+    },
   },
   {
     name: "add_working_agreement",
@@ -519,6 +560,34 @@ async function runTool(
     if (!role) return j({ ok: false, error: "No matching role." });
     const { skipped } = await recordPushback({ role, conversationId });
     return j({ ok: true, role: role.name, flaggedKept: true, avoidedTask: skipped?.title ?? null });
+  }
+
+  if (name === "get_compass_overview") {
+    return j({ ok: true, ...(await getCompassOverview()) });
+  }
+
+  if (name === "manage_role") {
+    const res = await manageRole({
+      action: input.action as "create" | "update" | "archive",
+      roleName: input.role_name as string | undefined,
+      name: input.name as string | undefined,
+      importance: input.importance as string | undefined,
+      status: input.status as string | undefined,
+      conversationId,
+    });
+    return j(res);
+  }
+
+  if (name === "manage_project") {
+    const res = await manageProject({
+      action: input.action as "create" | "update" | "archive",
+      projectName: input.project_name as string | undefined,
+      name: input.name as string | undefined,
+      roleName: input.role_name as string | undefined,
+      status: input.status as string | undefined,
+      conversationId,
+    });
+    return j(res);
   }
 
   if (name === "add_working_agreement") {

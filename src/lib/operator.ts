@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, ilike } from "drizzle-orm";
 import {
   db,
   roles as rolesTable,
@@ -427,6 +427,143 @@ export async function addWorkingAgreement(input: {
   return { summary };
 }
 
+/* ------------------- Compass structure (roles/projects) ---------------- */
+
+/** Full structured view of Compass so Scout can "see everything." */
+export async function getCompassOverview() {
+  const [allRoles, allProjects, openTasks, allIdeas] = await Promise.all([
+    db.select().from(rolesTable).where(isNull(rolesTable.archivedAt)),
+    db.select().from(projectsTable),
+    db.select().from(tasksTable).where(eq(tasksTable.status, "open")),
+    db.select().from(ideasTable),
+  ]);
+  const activeProjects = allProjects.filter((p) => p.status === "active");
+  return {
+    roles: allRoles.map((r) => ({
+      name: r.name,
+      status: r.currentStatus,
+      importance: r.importanceLevel,
+      openTasks: openTasks.filter((t) => t.roleId === r.id).length,
+      projects: activeProjects.filter((p) => p.roleId === r.id).map((p) => p.name),
+    })),
+    projects: activeProjects.map((p) => ({
+      name: p.name,
+      role: allRoles.find((r) => r.id === p.roleId)?.name ?? null,
+      status: p.status,
+    })),
+    counts: {
+      roles: allRoles.length,
+      activeProjects: activeProjects.length,
+      openTasks: openTasks.length,
+      ideas: allIdeas.filter((i) => i.status !== "archived").length,
+    },
+  };
+}
+
+async function findProject(name: string) {
+  const [p] = await db.select().from(projectsTable).where(ilike(projectsTable.name, `%${name}%`)).limit(1);
+  return p ?? null;
+}
+
+export async function manageRole(input: {
+  action: "create" | "update" | "archive";
+  roleName?: string;
+  name?: string;
+  importance?: string;
+  status?: string;
+  conversationId?: string | null;
+}) {
+  const roles = await activeRoles();
+
+  if (input.action === "create") {
+    if (!input.name) return { ok: false, summary: "Need a name to create a role." };
+    const [r] = await db
+      .insert(rolesTable)
+      .values({
+        name: input.name,
+        importanceLevel: (input.importance ?? "medium") as never,
+        currentStatus: (input.status ?? "maintaining") as never,
+      })
+      .returning();
+    const summary = `Created role "${r.name}"`;
+    await logActivity({ actionKind: "role", summary, entityTable: "roles", entityId: r.id, undoPayload: { op: "create", id: r.id }, conversationId: input.conversationId });
+    return { ok: true, summary };
+  }
+
+  const role = matchRole(input.roleName, roles);
+  if (!role) return { ok: false, summary: "Couldn't find that role.", roles: roles.map((r) => r.name) };
+
+  if (input.action === "archive") {
+    await db.update(rolesTable).set({ archivedAt: new Date() }).where(eq(rolesTable.id, role.id));
+    const summary = `Archived role "${role.name}"`;
+    await logActivity({ actionKind: "role", summary, entityTable: "roles", entityId: role.id, undoPayload: { op: "archive", id: role.id }, conversationId: input.conversationId });
+    return { ok: true, summary };
+  }
+
+  // update
+  const prev = { name: role.name, importanceLevel: role.importanceLevel, currentStatus: role.currentStatus };
+  await db
+    .update(rolesTable)
+    .set({
+      name: input.name ?? role.name,
+      importanceLevel: (input.importance ?? role.importanceLevel) as never,
+      currentStatus: (input.status ?? role.currentStatus) as never,
+      updatedAt: new Date(),
+    })
+    .where(eq(rolesTable.id, role.id));
+  const summary = input.name && input.name !== role.name ? `Renamed role "${role.name}" → "${input.name}"` : `Updated role "${role.name}"`;
+  await logActivity({ actionKind: "role", summary, entityTable: "roles", entityId: role.id, undoPayload: { op: "update", id: role.id, prev }, conversationId: input.conversationId });
+  return { ok: true, summary };
+}
+
+export async function manageProject(input: {
+  action: "create" | "update" | "archive";
+  projectName?: string;
+  name?: string;
+  roleName?: string;
+  status?: string;
+  conversationId?: string | null;
+}) {
+  const roles = await activeRoles();
+  const role = input.roleName ? matchRole(input.roleName, roles) : null;
+
+  if (input.action === "create") {
+    if (!input.name) return { ok: false, summary: "Need a name to create a project." };
+    const [p] = await db
+      .insert(projectsTable)
+      .values({ name: input.name, roleId: role?.id ?? null, status: (input.status ?? "active") as never })
+      .returning();
+    const summary = `Created project "${p.name}"${role ? ` under ${role.name}` : ""}`;
+    await logActivity({ actionKind: "project", summary, entityTable: "projects", entityId: p.id, undoPayload: { op: "create", id: p.id }, conversationId: input.conversationId });
+    return { ok: true, summary };
+  }
+
+  const project = input.projectName ? await findProject(input.projectName) : null;
+  if (!project) return { ok: false, summary: "Couldn't find that project." };
+
+  if (input.action === "archive") {
+    const prev = { status: project.status };
+    await db.update(projectsTable).set({ status: "archived", updatedAt: new Date() }).where(eq(projectsTable.id, project.id));
+    const summary = `Archived project "${project.name}"`;
+    await logActivity({ actionKind: "project", summary, entityTable: "projects", entityId: project.id, undoPayload: { op: "archive", id: project.id, prev }, conversationId: input.conversationId });
+    return { ok: true, summary };
+  }
+
+  const prev = { name: project.name, roleId: project.roleId, status: project.status };
+  await db
+    .update(projectsTable)
+    .set({
+      name: input.name ?? project.name,
+      roleId: input.roleName ? role?.id ?? project.roleId : project.roleId,
+      status: (input.status ?? project.status) as never,
+      updatedAt: new Date(),
+    })
+    .where(eq(projectsTable.id, project.id));
+  const summary = `Updated project "${project.name}"`;
+  await logActivity({ actionKind: "project", summary, entityTable: "projects", entityId: project.id, undoPayload: { op: "update", id: project.id, prev }, conversationId: input.conversationId });
+  return { ok: true, summary };
+}
+
 /* -------------------------------- Undo --------------------------------- */
 
 export async function undoLast(): Promise<{ ok: boolean; message: string }> {
@@ -445,7 +582,9 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
   const [entry] = await db.select().from(activityTable).where(eq(activityTable.id, id)).limit(1);
   if (!entry) return { ok: false, message: "That action wasn't found." };
   if (entry.undoneAt) return { ok: false, message: "That was already undone." };
-  const p = (entry.undoPayloadJson ?? {}) as Record<string, string | number | null>;
+  const p = (entry.undoPayloadJson ?? {}) as Record<string, unknown> & {
+    [k: string]: string | number | null | undefined | Record<string, unknown>;
+  };
 
   try {
     switch (entry.actionKind) {
@@ -497,6 +636,28 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
       case "working_agreement":
         await db.delete(agreementsTable).where(eq(agreementsTable.id, p.agreementId as string));
         break;
+      case "role": {
+        const id = p.id as string;
+        if (p.op === "create") await db.delete(rolesTable).where(eq(rolesTable.id, id));
+        else if (p.op === "archive") await db.update(rolesTable).set({ archivedAt: null }).where(eq(rolesTable.id, id));
+        else if (p.op === "update") {
+          const prev = p.prev as { name: string; importanceLevel: string; currentStatus: string };
+          await db.update(rolesTable).set({ name: prev.name, importanceLevel: prev.importanceLevel as never, currentStatus: prev.currentStatus as never }).where(eq(rolesTable.id, id));
+        }
+        break;
+      }
+      case "project": {
+        const id = p.id as string;
+        if (p.op === "create") await db.delete(projectsTable).where(eq(projectsTable.id, id));
+        else if (p.op === "archive") {
+          const prev = p.prev as { status: string };
+          await db.update(projectsTable).set({ status: (prev?.status ?? "active") as never }).where(eq(projectsTable.id, id));
+        } else if (p.op === "update") {
+          const prev = p.prev as { name: string; roleId: string | null; status: string };
+          await db.update(projectsTable).set({ name: prev.name, roleId: prev.roleId, status: prev.status as never }).where(eq(projectsTable.id, id));
+        }
+        break;
+      }
       default:
         return { ok: false, message: `"${entry.summary}" can't be undone automatically.` };
     }

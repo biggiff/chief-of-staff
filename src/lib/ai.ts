@@ -26,6 +26,7 @@ import {
   completeTask,
   createIdea,
   findSimilarIdeas,
+  findSimilarOpenTasks,
   appendIdeaNote,
   reassign,
   recordPushback,
@@ -83,6 +84,8 @@ Attention types: focused_work, progress (built/shipped something), planning, thi
 Tasks & reminders live in Todoist (the source of truth). create_task/complete_task go through Todoist. You CAN set due dates AND times via due_string ("today at 3pm", "tomorrow morning", "Friday at 10am") — use it for timed reminders and confirm exactly what you scheduled (Todoist delivers it; don't promise a push beyond that). If a time/date is ambiguous, ask one short question. For complete_task, pass her wording; if the match is unclear, ask which one.
 
 Ideas: when create_idea reports duplicateFound, don't duplicate — ask whether to add a note (add_idea_note) or make a new one (force=true).
+
+No duplicate tasks: when create_task reports duplicateFound, do NOT create another — tell her that one's already on the list and ask if she really wants a second (force=true only after she confirms). Never create the same task repeatedly.
 
 Trust: confirm briefly what changed; don't over-explain unless she asks why. Every action is undoable ("undo that").
 
@@ -189,14 +192,15 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_task",
-    description: "Create a task in Todoist (the source of truth) and mirror it in Compass. Infer the role when obvious.",
+    description: "Create a task in Todoist (the source of truth) and mirror it in Compass. Infer the role when obvious. The result may report duplicateFound (a similar open task already exists) — if so, do NOT create another; confirm with the user, and only pass force=true if they want it anyway.",
     input_schema: {
       type: "object",
       properties: {
         title: { type: "string" },
         role_name: { type: "string" },
         priority: { type: "string", enum: ["low", "medium", "high"] },
-        due_string: { type: "string", description: "Natural-language due date e.g. 'tomorrow', 'friday'." },
+        due_string: { type: "string", description: "Natural-language due date/time e.g. 'tomorrow', 'friday at 10am'." },
+        force: { type: "boolean", description: "Create even if a similar open task exists (only after the user confirms)." },
       },
       required: ["title"],
     },
@@ -332,6 +336,16 @@ async function runTool(
   }
 
   if (name === "create_task") {
+    if (input.force !== true) {
+      const similar = await findSimilarOpenTasks(input.title as string);
+      if (similar.length && similar[0].score >= 70) {
+        return j({
+          ok: false,
+          duplicateFound: true,
+          existing: { title: similar[0].task.title },
+        });
+      }
+    }
     const role = matchRole(input.role_name as string | undefined, roles);
     const { task, summary } = await createTask({
       title: input.title as string,
@@ -451,7 +465,7 @@ async function runTool(
   if (name === "get_todoist_tasks") {
     const { listTodoistTasks, todoistEnabled } = await import("./integrations/todoist");
     if (!todoistEnabled()) return j({ ok: false, error: "Todoist not connected." });
-    const items = await listTodoistTasks();
+    const items = await listTodoistTasks(300); // return all active; don't silently truncate
     return j({ ok: true, count: items.length, tasks: items });
   }
 
@@ -516,7 +530,8 @@ export type HistoryMsg = { role: "user" | "chief_of_staff" | "system"; content: 
 export async function generateAIResponse(
   userText: string,
   history: HistoryMsg[] = [],
-  conversationId: string | null = null
+  conversationId: string | null = null,
+  image?: { data: string; mediaType: string }
 ): Promise<ChiefResponse> {
   const client = new Anthropic();
   const context = await buildContext();
@@ -526,7 +541,25 @@ export async function generateAIResponse(
     .slice(-12)
     .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
 
-  const messages: Anthropic.MessageParam[] = [...priorTurns, { role: "user", content: userText }];
+  // Latest turn — multimodal if an image was attached.
+  const latest: Anthropic.MessageParam = image
+    ? {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: image.mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+              data: image.data,
+            },
+          },
+          { type: "text", text: userText || "Take a look at this — what do you think?" },
+        ],
+      }
+    : { role: "user", content: userText };
+
+  const messages: Anthropic.MessageParam[] = [...priorTurns, latest];
   const toolsUsed: string[] = [];
 
   for (let i = 0; i < 6; i++) {

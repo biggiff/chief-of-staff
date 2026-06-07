@@ -236,6 +236,28 @@ function normalizeText(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Find existing OPEN tasks similar to a title (guards against duplicate creation). */
+export async function findSimilarOpenTasks(title: string) {
+  const open = await db.select().from(tasksTable).where(eq(tasksTable.status, "open"));
+  const q = normalizeText(title);
+  const qWords = q.split(" ").filter(Boolean);
+  return open
+    .map((task) => {
+      const t = normalizeText(task.title);
+      let score = 0;
+      if (t === q) score = 100;
+      else if (t.includes(q) || q.includes(t)) score = 85;
+      else {
+        const tw = new Set(t.split(" ").filter(Boolean));
+        const overlap = qWords.filter((w) => tw.has(w)).length;
+        score = (overlap / Math.max(qWords.length, 1)) * 70;
+      }
+      return { task, score };
+    })
+    .filter((x) => x.score >= 55)
+    .sort((a, b) => b.score - a.score);
+}
+
 /** Find existing ideas (active + archived) similar to a title. */
 export async function findSimilarIdeas(title: string) {
   const all = await db.select().from(ideasTable);

@@ -12,14 +12,24 @@ export default async function ChatPage() {
     .orderBy(desc(conversations.updatedAt))
     .limit(1);
 
-  let initialMessages: { id: string; role: "user" | "chief_of_staff" | "system"; content: string }[] = [];
+  let initialMessages: {
+    id: string;
+    role: "user" | "chief_of_staff" | "system";
+    content: string;
+    image?: string | null;
+  }[] = [];
   if (conv) {
     const msgs = await db
       .select()
       .from(messages)
       .where(eq(messages.conversationId, conv.id))
       .orderBy(messages.createdAt);
-    initialMessages = msgs.map((m) => ({ id: m.id, role: m.role, content: m.content }));
+    initialMessages = msgs.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      image: (m.metadataJson as { image?: string } | null)?.image ?? null,
+    }));
   }
 
   let glance: HomeGlance | null = null;

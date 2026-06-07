@@ -11,7 +11,15 @@ export async function POST(req: NextRequest) {
     const content: string = (body?.content ?? "").toString().trim();
     let conversationId: string | undefined = body?.conversationId;
 
-    if (!content) {
+    // Optional image: a "data:<mime>;base64,<data>" URL from the client.
+    const imageUrl: string | undefined = body?.image;
+    let image: { data: string; mediaType: string } | undefined;
+    if (imageUrl?.startsWith("data:")) {
+      const m = imageUrl.match(/^data:(.+?);base64,(.*)$/s);
+      if (m) image = { mediaType: m[1], data: m[2] };
+    }
+
+    if (!content && !image) {
       return NextResponse.json({ error: "Message is empty." }, { status: 400 });
     }
 
@@ -19,7 +27,7 @@ export async function POST(req: NextRequest) {
     if (!conversationId) {
       const [conv] = await db
         .insert(conversations)
-        .values({ title: content.slice(0, 60) })
+        .values({ title: (content || "Photo").slice(0, 60) })
         .returning();
       conversationId = conv.id;
     } else {
@@ -37,14 +45,19 @@ export async function POST(req: NextRequest) {
       .orderBy(messages.createdAt);
     const history = priorMessages.map((m) => ({ role: m.role, content: m.content }));
 
-    // Save the user message.
+    // Save the user message (store the image in metadata so it persists in history).
     const [userMsg] = await db
       .insert(messages)
-      .values({ conversationId, role: "user", content })
+      .values({
+        conversationId,
+        role: "user",
+        content: content || "📷 Photo",
+        metadataJson: image ? { image: imageUrl } : null,
+      })
       .returning();
 
     // Generate + save the Chief of Staff response.
-    const reply = await generateChiefResponse(content, history, conversationId);
+    const reply = await generateChiefResponse(content, history, conversationId, image);
     const [chiefMsg] = await db
       .insert(messages)
       .values({

@@ -286,7 +286,7 @@ async function upsertStatus(
 }
 
 /** Live read for the AI tool — active Todoist tasks grouped by project (no DB writes). */
-export async function listTodoistTasks(limit = 40): Promise<
+export async function listTodoistTasks(limit = 300): Promise<
   { title: string; project: string | null; section: string | null; priority: Priority; due: string | null }[]
 > {
   const token = todoistToken();

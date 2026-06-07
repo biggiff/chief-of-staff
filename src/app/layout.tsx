@@ -21,6 +21,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   themeColor: "#fafaf8",
+  viewportFit: "cover", // enables env(safe-area-inset-*) so the input clears the home bar
 };
 
 export default function RootLayout({
@@ -34,7 +35,8 @@ export default function RootLayout({
         <div className="flex flex-col md:flex-row h-[100dvh] overflow-hidden">
           <MobileTopBar />
           <Nav />
-          <main className="flex-1 min-w-0 overflow-hidden">{children}</main>
+          {/* Scrollable for backstage pages; the chat page manages its own height. */}
+          <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
         </div>
       </body>
     </html>

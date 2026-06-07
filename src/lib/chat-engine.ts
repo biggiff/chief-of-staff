@@ -96,14 +96,18 @@ function isPushback(t: string): boolean {
 export async function generateChiefResponse(
   userText: string,
   history: { role: "user" | "chief_of_staff" | "system"; content: string }[] = [],
-  conversationId: string | null = null
+  conversationId: string | null = null,
+  image?: { data: string; mediaType: string }
 ): Promise<ChiefResponse> {
   const { aiEnabled, generateAIResponse } = await import("./ai");
   if (aiEnabled()) {
     try {
-      return await generateAIResponse(userText, history, conversationId);
+      return await generateAIResponse(userText, history, conversationId, image);
     } catch (err) {
       console.error("AI layer failed, falling back to rules:", err);
+      if (image) {
+        return { content: "I can't look at images right now — try again in a bit.", metadata: { engine: "rules", imageUnsupported: true } };
+      }
       const fallback = await generateRuleBasedResponse(userText);
       return {
         content: fallback.content,

@@ -6,7 +6,32 @@ type Msg = {
   id: string;
   role: "user" | "chief_of_staff" | "system";
   content: string;
+  image?: string | null;
 };
+
+// Downscale an image client-side so uploads + storage stay small.
+async function fileToResizedDataUrl(file: File, max = 1024, quality = 0.8): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = dataUrl;
+  });
+  const scale = Math.min(1, max / Math.max(img.width, img.height));
+  const w = Math.round(img.width * scale);
+  const h = Math.round(img.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", quality);
+}
 
 type Glance = {
   opener: string;
@@ -81,9 +106,22 @@ export default function ChatClient({
   const [conversationId, setConversationId] = useState<string | null>(initialConversationId);
   const [messages, setMessages] = useState<Msg[]>(initialMessages);
   const [input, setInput] = useState("");
+  const [image, setImage] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    try {
+      setImage(await fileToResizedDataUrl(file));
+    } catch {
+      setError("Couldn't read that image.");
+    }
+  }
   const landed = useRef(false);
 
   useEffect(() => {
@@ -98,20 +136,22 @@ export default function ChatClient({
 
   async function send(text: string) {
     const content = text.trim();
-    if (!content || sending) return;
+    const img = image;
+    if ((!content && !img) || sending) return;
     setError(null);
     setSending(true);
 
-    // Optimistic user bubble.
+    // Optimistic user bubble (shows the image immediately).
     const tempId = `temp-${Date.now()}`;
-    setMessages((m) => [...m, { id: tempId, role: "user", content }]);
+    setMessages((m) => [...m, { id: tempId, role: "user", content: content || "📷 Photo", image: img }]);
     setInput("");
+    setImage(null);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId, content }),
+        body: JSON.stringify({ conversationId, content, image: img }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -119,14 +159,20 @@ export default function ChatClient({
       }
       const data = await res.json();
       setConversationId(data.conversationId);
-      // Replace optimistic message with the real pair.
+      // Replace optimistic message with the real pair (carry image from metadata).
       setMessages((m) => [
         ...m.filter((x) => x.id !== tempId),
-        ...data.messages.map((x: Msg) => ({ id: x.id, role: x.role, content: x.content })),
+        ...data.messages.map((x: { id: string; role: Msg["role"]; content: string; metadataJson?: { image?: string } | null }) => ({
+          id: x.id,
+          role: x.role,
+          content: x.content,
+          image: x.metadataJson?.image ?? null,
+        })),
       ]);
     } catch (e: unknown) {
       setMessages((m) => m.filter((x) => x.id !== tempId));
       setInput(content);
+      setImage(img);
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setSending(false);
@@ -150,7 +196,15 @@ export default function ChatClient({
                     : "bg-white border border-neutral-200 text-neutral-900 rounded-bl-sm"
                 }`}
               >
-                {renderContent(m.content)}
+                {m.image && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={m.image}
+                    alt="attachment"
+                    className="mb-1.5 max-h-64 w-auto rounded-lg"
+                  />
+                )}
+                {m.content && renderContent(m.content)}
               </div>
             </div>
           ))}
@@ -165,7 +219,10 @@ export default function ChatClient({
         </div>
       </div>
 
-      <div className="border-t border-neutral-200 bg-white px-4 py-3">
+      <div
+        className="border-t border-neutral-200 bg-white px-4 pt-3"
+        style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
+      >
         <div className="mx-auto max-w-2xl">
           {messages.length === 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
@@ -180,7 +237,27 @@ export default function ChatClient({
               ))}
             </div>
           )}
+          {image && (
+            <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 p-1.5">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={image} alt="to send" className="h-12 w-12 rounded object-cover" />
+              <button
+                onClick={() => setImage(null)}
+                className="text-xs text-neutral-500 hover:text-neutral-800 px-1"
+                aria-label="Remove image"
+              >
+                Remove
+              </button>
+            </div>
+          )}
           {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={onPickImage}
+          />
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -188,6 +265,14 @@ export default function ChatClient({
             }}
             className="flex items-end gap-2"
           >
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="shrink-0 rounded-xl border border-neutral-300 px-3 py-2.5 text-[17px] text-neutral-600 hover:bg-neutral-100"
+              aria-label="Attach photo"
+            >
+              +
+            </button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -209,7 +294,7 @@ export default function ChatClient({
             />
             <button
               type="submit"
-              disabled={sending || !input.trim()}
+              disabled={sending || (!input.trim() && !image)}
               className="rounded-xl bg-neutral-900 px-4 py-2.5 text-[15px] text-white disabled:opacity-40"
             >
               Send

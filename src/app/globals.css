@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: #fafaf8;
+  color: #1a1a1a;
+}
+
+/* Preserve newlines from rule-based responses. */
+.prose-chat {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

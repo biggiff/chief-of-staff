@@ -9,8 +9,10 @@ export async function middleware(req: NextRequest) {
   if (!authEnabled()) return NextResponse.next();
 
   const { pathname } = req.nextUrl;
-  // The login page and the login endpoint must be reachable while logged out.
-  if (pathname === "/login" || pathname === "/api/login") return NextResponse.next();
+  // Login + the PWA manifest must be reachable while logged out.
+  if (pathname === "/login" || pathname === "/api/login" || pathname === "/manifest.webmanifest") {
+    return NextResponse.next();
+  }
 
   const cookie = req.cookies.get(AUTH_COOKIE)?.value;
   const ok = !!cookie && cookie === (await expectedToken());

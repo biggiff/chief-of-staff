@@ -6,12 +6,21 @@ import MobileTopBar from "@/components/MobileTopBar";
 export const metadata: Metadata = {
   title: "Scout",
   description: "Scout — your Chief of Staff.",
+  applicationName: "Scout",
+  manifest: "/manifest.webmanifest",
+  // Launch full-screen (no Safari chrome) when added to the iOS Home Screen.
+  appleWebApp: {
+    capable: true,
+    title: "Scout",
+    statusBarStyle: "default",
+  },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  themeColor: "#fafaf8",
 };
 
 export default function RootLayout({

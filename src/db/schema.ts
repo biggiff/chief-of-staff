@@ -276,6 +276,23 @@ export const activityLog = pgTable("activity_log", {
   undoneAt: timestamp("undone_at", { withTimezone: true }),
 });
 
+/* ------------------------ Working agreements --------------------------- */
+
+/**
+ * Standing instructions from the user about how Scout should operate —
+ * behavioral preferences, operating rules, corrections, and lessons learned.
+ * These load into Scout's context every session and shape his behavior.
+ */
+export const workingAgreements = pgTable("working_agreements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  text: text("text").notNull(),
+  category: text("category").notNull().default("behavior"), // behavior | priority | style | correction | lesson
+  status: text("status").notNull().default("active"), // active | archived
+  source: text("source").notNull().default("manual"), // manual | learned
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* -------------------- Todoist project mapping layer -------------------- */
 
 export const todoistProjectLinks = pgTable("todoist_project_links", {
@@ -310,3 +327,4 @@ export type ProposedUpdate = typeof proposedUpdates.$inferSelect;
 export type Insight = typeof insights.$inferSelect;
 export type ActivityLog = typeof activityLog.$inferSelect;
 export type TodoistProjectLink = typeof todoistProjectLinks.$inferSelect;
+export type WorkingAgreement = typeof workingAgreements.$inferSelect;

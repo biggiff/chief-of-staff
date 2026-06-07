@@ -5,7 +5,7 @@ config({ path: ".env.local" });
 config({ path: ".env" });
 
 async function main() {
-  const { db, roles, integrations } = await import("./index");
+  const { db, roles, integrations, workingAgreements } = await import("./index");
 
   console.log("Seeding roles...");
 
@@ -134,6 +134,26 @@ async function main() {
     }
     await db.insert(integrations).values({ provider, status: "not_connected" });
     console.log(`  + ${provider}`);
+  }
+
+  console.log("Seeding working agreements...");
+  const existingAgreements = await db.select().from(workingAgreements).limit(1);
+  if (existingAgreements.length === 0) {
+    const agreements = [
+      { text: "When you recommend a focus, explain the prioritization — say why it, and why not the others.", category: "behavior" },
+      { text: "Be concise by default. Expand only when asked.", category: "style" },
+      { text: "Challenge avoidance directly but kindly — name it, don't nag.", category: "behavior" },
+      { text: "Prefer updating an existing idea over creating a duplicate.", category: "behavior" },
+      { text: "Relationship health (Wife) matters — watch the connection, not just logistics.", category: "priority" },
+      { text: "Founder is strategic — protect it from being buried by urgent, lower-value tasks.", category: "priority" },
+      { text: "Follow Scout's personality: warm, observant, opinionated, lightly funny, no corporate jargon.", category: "style" },
+    ];
+    for (const a of agreements) {
+      await db.insert(workingAgreements).values(a);
+      console.log(`  + ${a.text.slice(0, 50)}…`);
+    }
+  } else {
+    console.log("  - working agreements already exist, skipping");
   }
 
   console.log("Done.");

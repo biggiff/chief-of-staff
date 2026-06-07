@@ -7,6 +7,7 @@ import {
   tasks as tasksTable,
   ideas as ideasTable,
   proposedUpdates as proposedUpdatesTable,
+  workingAgreements as agreementsTable,
   activityLog as activityTable,
   type Role,
   type AttentionType,
@@ -32,6 +33,7 @@ import {
   reassign,
   recordPushback,
   saveCheckin,
+  addWorkingAgreement,
   undoLast,
 } from "./operator";
 import { formatDate } from "./dates";
@@ -92,6 +94,8 @@ Email (Gmail): you can read her mail across all folders (search_emails uses Gmai
 
 Email labels = life areas. She labels forwarded mail by which part of her life it's from (e.g. Bakery, PTO, Founder). search_emails and read_email return each email's labels — surface them and use them to route/group ("3 unread under PTO"). To filter by one, search with label:"Name" (use list_email_labels if you need the exact names).
 
+Working agreements: when she tells you how to operate ("always…", "from now on…", "stop doing…", "I prefer…") or corrects your behavior, save it with add_working_agreement so it sticks across sessions, then confirm in one line. The active agreements are listed at the top of the context — treat them as binding.
+
 Trust: confirm briefly what changed; don't over-explain unless she asks why. Every action is undoable ("undo that").
 
 CRITICAL: act ONLY on her most recent message. Earlier messages are context already handled — never re-log, re-create, or repeat a prior turn's write. If the latest message doesn't call for a write, don't make one.
@@ -109,6 +113,19 @@ async function buildContext(): Promise<string> {
   const briefing = await getLatestBriefing();
 
   const lines: string[] = [];
+
+  // Working agreements — standing instructions about how Scout should operate.
+  // Loaded every session; they take precedence in how you behave.
+  const agreements = await db
+    .select()
+    .from(agreementsTable)
+    .where(eq(agreementsTable.status, "active"));
+  if (agreements.length) {
+    lines.push("WORKING AGREEMENTS — Selena's standing instructions for how you operate. Follow these:");
+    for (const a of agreements) lines.push(`- ${a.text}`);
+    lines.push("");
+  }
+
   lines.push("COMPASS STATE (computed by the rule-based engine):");
   lines.push("");
   lines.push("Roles, ranked by attention score (higher = needs attention more):");
@@ -270,6 +287,19 @@ const TOOLS: Anthropic.Tool[] = [
     name: "record_pushback",
     description: "The user is resisting a role today. Keeps it flagged and records avoidance. Acknowledge and offer a lower-friction alternative.",
     input_schema: { type: "object", properties: { role_name: { type: "string" } }, required: ["role_name"] },
+  },
+  {
+    name: "add_working_agreement",
+    description:
+      "Save a standing instruction about how you should operate — a behavioral preference, operating rule, correction, or lesson. Use when she tells you how to work ('always…', 'from now on…', 'stop doing X', 'remember that I prefer…') or corrects your behavior. These load every session and shape how you act.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The agreement, phrased as a durable rule." },
+        category: { type: "string", enum: ["behavior", "priority", "style", "correction", "lesson"] },
+      },
+      required: ["text"],
+    },
   },
   {
     name: "undo_last",
@@ -489,6 +519,15 @@ async function runTool(
     if (!role) return j({ ok: false, error: "No matching role." });
     const { skipped } = await recordPushback({ role, conversationId });
     return j({ ok: true, role: role.name, flaggedKept: true, avoidedTask: skipped?.title ?? null });
+  }
+
+  if (name === "add_working_agreement") {
+    const { summary } = await addWorkingAgreement({
+      text: input.text as string,
+      category: (input.category as string) ?? "behavior",
+      conversationId,
+    });
+    return j({ ok: true, summary });
   }
 
   if (name === "undo_last") {

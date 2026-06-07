@@ -8,6 +8,7 @@ import {
   checkins as checkinsTable,
   checkinRoleScores as checkinRoleScoresTable,
   roleAttentionEvents as attentionTable,
+  workingAgreements as agreementsTable,
   activityLog as activityTable,
   type AttentionType,
   type Priority,
@@ -405,6 +406,27 @@ export async function saveCheckin(input: {
   return { checkin, summary };
 }
 
+export async function addWorkingAgreement(input: {
+  text: string;
+  category?: string;
+  conversationId?: string | null;
+}) {
+  const [row] = await db
+    .insert(agreementsTable)
+    .values({ text: input.text.slice(0, 500), category: input.category ?? "behavior", source: "learned" })
+    .returning();
+  const summary = `Saved a working agreement: "${input.text.slice(0, 80)}"`;
+  await logActivity({
+    actionKind: "working_agreement",
+    summary,
+    entityTable: "working_agreements",
+    entityId: row.id,
+    undoPayload: { agreementId: row.id },
+    conversationId: input.conversationId,
+  });
+  return { summary };
+}
+
 /* -------------------------------- Undo --------------------------------- */
 
 export async function undoLast(): Promise<{ ok: boolean; message: string }> {
@@ -471,6 +493,9 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         break;
       case "save_checkin":
         await db.delete(checkinsTable).where(eq(checkinsTable.id, p.checkinId as string));
+        break;
+      case "working_agreement":
+        await db.delete(agreementsTable).where(eq(agreementsTable.id, p.agreementId as string));
         break;
       default:
         return { ok: false, message: `"${entry.summary}" can't be undone automatically.` };

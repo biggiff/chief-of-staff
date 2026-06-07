@@ -11,6 +11,7 @@ const COMPASS_LINKS: { href: string; label: string }[] = [
   { href: "/tasks", label: "Tasks" },
   { href: "/ideas", label: "Ideas" },
   { href: "/crossroads", label: "Crossroads" },
+  { href: "/agreements", label: "Agreements" },
   { href: "/checkin", label: "Check-ins" },
   { href: "/briefing", label: "Briefings" },
   { href: "/observations", label: "Observations" },

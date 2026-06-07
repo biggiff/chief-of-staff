@@ -15,6 +15,7 @@ import {
   proposedUpdates,
   insights,
   briefings,
+  workingAgreements,
 } from "@/db";
 import { generateBriefing } from "@/lib/briefing";
 import { todayStr } from "@/lib/dates";
@@ -399,4 +400,33 @@ export async function resolveObservation(fd: FormData) {
   const id = str(fd, "id");
   await db.update(insights).set({ status: "resolved", updatedAt: new Date() }).where(eq(insights.id, id));
   revalidatePath("/observations");
+}
+
+/* --------------------------- Working agreements ---------------------------- */
+
+export async function createAgreement(fd: FormData) {
+  await db.insert(workingAgreements).values({
+    text: str(fd, "text"),
+    category: str(fd, "category") || "behavior",
+    source: "manual",
+  });
+  revalidatePath("/agreements");
+}
+
+export async function updateAgreement(fd: FormData) {
+  const id = str(fd, "id");
+  await db
+    .update(workingAgreements)
+    .set({ text: str(fd, "text"), category: str(fd, "category") || "behavior", updatedAt: new Date() })
+    .where(eq(workingAgreements.id, id));
+  revalidatePath("/agreements");
+}
+
+export async function archiveAgreement(fd: FormData) {
+  const id = str(fd, "id");
+  await db
+    .update(workingAgreements)
+    .set({ status: "archived", updatedAt: new Date() })
+    .where(eq(workingAgreements.id, id));
+  revalidatePath("/agreements");
 }

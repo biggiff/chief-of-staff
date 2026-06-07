@@ -10,10 +10,13 @@ The user speaks naturally; Scout translates intent into Compass operations.
 | 3.2 | **Crossroads Engine** — recurring-decision tracking ("we've been here before") | ✅ done |
 | 3.3 | **Observation Engine** — automatic, quality-first cross-source pattern detection | ✅ done |
 | 3.4 | **Briefing Intelligence** — briefings that draw on roles, attention, crossroads, observations, email, calendar | ✅ done |
-| 3.5 | **Natural Language Layer** — user never needs Compass terminology | ⬜ planned (spec below) |
+| 3.5 | **Natural Language Layer** — user never needs Compass terminology | ✅ done |
 
 Build order: **3.3 → 3.4 → 3.5.** Pause for testing after each.
-Next up: **3.5 Natural Language Layer** (spec below).
+**Phase 3 complete.** 3.5 shipped as `answer_about` (routing/fan-out tool in
+`src/lib/answer.ts`) + a routing/voice guide in Scout's system prompt. Verified
+across 22 natural-language questions (incl. the 5 ambiguous ones): all routed to
+the right reads and answered in plain human language, no Compass terms leaked.
 
 ---
 

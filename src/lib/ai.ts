@@ -52,6 +52,7 @@ import {
   manageIdea,
   undoLast,
 } from "./operator";
+import { gatherAbout } from "./answer";
 import { formatDate, startEndOfToday } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
@@ -121,6 +122,11 @@ The point is to never re-decide from zero: lean on the timeline so each discussi
 Role renames: when you rename a role, always pass a reason to manage_role — the reasoning behind name changes is preserved as context for future observations and prioritization.
 
 Working agreements: when she tells you how to operate ("always…", "from now on…", "stop doing…", "I prefer…") or corrects your behavior, save it with add_working_agreement so it sticks across sessions, then confirm in one line. The active agreements are listed at the top of the context — treat them as binding.
+
+Understanding her, not her vocabulary (this matters a lot): she will NEVER speak in Compass terms. She asks like a person — "what's going on with Mom?", "what am I avoiding?", "what keeps coming up?", "what's slipping?", "anything weird lately?", "what should I focus on?", "what changed this week?". Your job is to figure out what she's really asking and pull the right information yourself.
+- For these open-ended "how are things / what's going on / what am I missing" questions, call answer_about — it gathers across the right systems in one shot. Pass topic when she names a person/area ("Mom", "App Developer", "the bakery"); leave topic empty for broad questions about her whole life ("what am I avoiding?", "what's slipping?", "what should I focus on?"). For "anything I should pay attention to?" you can also lean on get_or_generate_briefing.
+- Rough map (you don't need to recite it, just route well): "going on with X" → answer_about(X). "avoiding / slipping / falling through cracks / missing" → answer_about() whole-life (overdue + avoided tasks + neglected roles + observations). "what keeps coming up / what do you keep noticing" → answer_about() (observations + crossroads). "what decisions am I stuck on" → search_crossroads. "what changed this week" → answer_about() / get_activity. When a question is genuinely ambiguous ("what's going on?"), default to the whole-life answer_about rather than asking her to clarify.
+- Then ANSWER LIKE A FRIEND, in human language — never read the entities back. Good: "Mom's mostly okay. Summer keeps showing up, though." / "The bakery decision is back." Bad: "Mom has two observations and three attention events." / "Crossroad #4 remains active." Translate everything into what it means for her, lead with the takeaway, keep it short, and only name a system if she explicitly asks how you know.
 
 Trust: confirm briefly what changed; don't over-explain unless she asks why. Every action is undoable ("undo that").
 
@@ -231,6 +237,21 @@ async function buildContext(): Promise<string> {
 }
 
 const TOOLS: Anthropic.Tool[] = [
+  {
+    name: "answer_about",
+    description:
+      "PRIMARY tool for open-ended 'how are things / what's going on / what am I missing' questions. ONE call fans out across the right Compass entities and returns a consolidated snapshot for you to synthesize — so you don't have to guess which systems to query. Use this for natural questions about a person/area ('what's going on with Mom?', 'how's App Developer?') by passing topic, OR for broad/ambiguous life questions ('what am I avoiding?', 'what's slipping?', 'what keeps coming up?', 'what should I focus on?', 'anything weird lately?') by leaving topic empty. Then answer in plain human language — never list the entities back.",
+    input_schema: {
+      type: "object",
+      properties: {
+        topic: {
+          type: "string",
+          description:
+            "Optional. A person, role, or theme she named (e.g. 'Mom', 'App Developer', 'bakery'). Leave EMPTY for whole-life questions ('what am I avoiding?', 'what's going on?').",
+        },
+      },
+    },
+  },
   {
     name: "get_or_generate_briefing",
     description: "Get today's briefing (focus role + reasoning + next action). Generates from Compass if none exists today. regenerate=true forces a fresh recompute (use after logging attention).",
@@ -557,6 +578,10 @@ async function runTool(
 ): Promise<string> {
   const roles = await activeRoles();
   const j = (o: unknown) => JSON.stringify(o);
+
+  if (name === "answer_about") {
+    return j(await gatherAbout(input.topic as string | undefined));
+  }
 
   if (name === "get_or_generate_briefing") {
     let briefing = input.regenerate ? await generateBriefing() : await getOrCreateTodaysBriefing();

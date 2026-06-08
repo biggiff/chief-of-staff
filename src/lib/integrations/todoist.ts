@@ -154,19 +154,24 @@ export async function ensureProjectWithSections(
   return { projectId, sections };
 }
 
-/** Find an open grocery task by name within a project. */
-export async function findTaskInProject(projectId: string, query: string): Promise<{ id: string; content: string } | null> {
+/** All open tasks in a project — fetched ONCE (callers dedupe in-memory). */
+export async function listActiveTasksInProject(projectId: string): Promise<{ id: string; content: string }[]> {
   const token = todoistToken();
   if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
   const tasks = await fetchActiveTasks(token);
+  return tasks.filter((t) => t.project_id === projectId).map((t) => ({ id: t.id, content: t.content }));
+}
+
+/** Find an open task by name within a project (single lookup — re-fetches the list). */
+export async function findTaskInProject(projectId: string, query: string): Promise<{ id: string; content: string } | null> {
+  const inProj = await listActiveTasksInProject(projectId);
   const q = query.toLowerCase().trim();
-  const inProj = tasks.filter((t) => t.project_id === projectId);
-  const best =
+  return (
     inProj.find((t) => t.content.toLowerCase() === q) ||
     inProj.find((t) => t.content.toLowerCase().includes(q)) ||
     inProj.find((t) => q.includes(t.content.toLowerCase())) ||
-    null;
-  return best ? { id: best.id, content: best.content } : null;
+    null
+  );
 }
 
 async function taskAction(id: string, action: "close" | "reopen"): Promise<void> {

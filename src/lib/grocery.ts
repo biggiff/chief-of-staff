@@ -6,6 +6,7 @@ import {
   createTodoistTask,
   moveTodoistTask,
   findTaskInProject,
+  listActiveTasksInProject,
   todoistEnabled,
 } from "./integrations/todoist";
 
@@ -155,17 +156,26 @@ export async function addGroceries(items: string[]): Promise<GroceryAddResult> {
     for (const item of unknown) resolved.push({ item, section: ai[item] ?? "Misc", via: "ai" });
   }
 
-  // Skip items already on the grocery list (avoid duplicates).
+  // Dedupe against the existing list — fetched ONCE (not per item, which used to
+  // re-pull the whole task list N times and time the whole turn out).
+  const existing = await listActiveTasksInProject(projectId);
+  const existingKeys = new Set(existing.map((t) => normalizeKey(t.content)));
+
   const placed: GroceryAddResult["placed"] = [];
   const skipped: string[] = [];
   for (const r of resolved) {
-    const dupe = await findTaskInProject(projectId, r.item);
-    if (dupe && normalizeKey(dupe.content) === normalizeKey(r.item)) {
+    const key = normalizeKey(r.item);
+    if (existingKeys.has(key)) {
       skipped.push(r.item);
       continue;
     }
-    await createTodoistTask({ content: r.item, projectId, sectionId: sections[r.section] });
-    placed.push(r);
+    try {
+      await createTodoistTask({ content: r.item, projectId, sectionId: sections[r.section] });
+      placed.push(r);
+      existingKeys.add(key); // guard against dupes within this same batch
+    } catch (err) {
+      console.error(`grocery add failed for "${r.item}"`, err);
+    }
   }
   return { ok: true, placed, skipped };
 }

@@ -88,11 +88,14 @@ export async function scoreRoles(): Promise<RoleScore[]> {
   }
 
   // Recent attention events (within the scoring window), grouped by role.
+  // Window + recency are by when the activity HAPPENED (occurredAt), not when it
+  // was entered — so backlogged history decays correctly instead of all counting
+  // as "today".
   const windowStart = new Date(Date.now() - ATTENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const recentEvents = await db
     .select()
     .from(attentionTable)
-    .where(gte(attentionTable.createdAt, windowStart));
+    .where(gte(attentionTable.occurredAt, windowStart));
   const eventsByRole = new Map<string, typeof recentEvents>();
   for (const e of recentEvents) {
     if (!eventsByRole.has(e.roleId)) eventsByRole.set(e.roleId, []);
@@ -203,10 +206,10 @@ export async function scoreRoles(): Promise<RoleScore[]> {
     let rawCredit = 0;
     let latestEventAt: Date | null = null;
     for (const e of events) {
-      const ageDays = daysSince(e.createdAt) ?? 0;
+      const ageDays = daysSince(e.occurredAt) ?? 0;
       rawCredit += weights[e.attentionType] * recencyFactor(ageDays) * durationFactor(e.durationMinutes);
       byType[e.attentionType] = (byType[e.attentionType] ?? 0) + 1;
-      if (!latestEventAt || e.createdAt > latestEventAt) latestEventAt = e.createdAt;
+      if (!latestEventAt || e.occurredAt > latestEventAt) latestEventAt = e.occurredAt;
     }
     const attentionCredit = Math.min(Math.round(rawCredit), MAX_ATTENTION_CREDIT);
 

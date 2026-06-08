@@ -237,6 +237,11 @@ export const roleAttentionEvents = pgTable("role_attention_events", {
   durationMinutes: integer("duration_minutes"),
   notes: text("notes"),
   source: text("source").notNull().default("chat"), // chat | manual | inferred
+  // When the activity actually happened (the real workout/event date) — a
+  // first-class field, distinct from createdAt (when it was entered into Compass).
+  // Lets us backlog history (e.g. 9 workouts from a screenshot) without losing the
+  // timeline. Defaults to now for live logging.
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

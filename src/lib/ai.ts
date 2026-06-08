@@ -48,6 +48,7 @@ import {
   listObservations,
   listActivity,
   listCheckins,
+  listAttentionHistory,
   listIdeas,
   manageIdea,
   promoteMemory,
@@ -60,7 +61,7 @@ import {
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
-import { formatDate, startEndOfToday, todayStr, appTimeZone } from "./dates";
+import { formatDate, startEndOfToday, todayStr, appTimeZone, parseOccurredAt } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
 /**
@@ -367,7 +368,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "log_attention",
-    description: "Log time/energy the user gave to a role. HIGH-confidence statements like 'I spent an hour on PTO' or 'great date night with Mandy'.",
+    description: "Log time/energy the user gave to a role. HIGH-confidence statements like 'I spent an hour on PTO' or 'great date night with Mandy'. IMPORTANT for history: if she's logging something that happened on a PAST date (e.g. backlogging workouts off a calendar/screenshot), set occurred_on to the real date — otherwise it records as today and the timeline is lost. To backlog MANY dates at once (same role/type), pass occurred_dates as an array of YYYY-MM-DD and it creates one event per date in a single call.",
     input_schema: {
       type: "object",
       properties: {
@@ -376,6 +377,8 @@ const TOOLS: Anthropic.Tool[] = [
         duration_minutes: { type: "number" },
         project_name: { type: "string" },
         notes: { type: "string" },
+        occurred_on: { type: "string", description: "The real date it happened (YYYY-MM-DD or natural date). Use for backlogging; omit for 'just now'." },
+        occurred_dates: { type: "array", items: { type: "string" }, description: "Multiple YYYY-MM-DD dates to log at once (one event each) — for bulk backfill from a screenshot/calendar." },
       },
       required: ["role_name", "attention_type"],
     },
@@ -564,6 +567,19 @@ const TOOLS: Anthropic.Tool[] = [
     name: "get_checkins",
     description: "Read recent check-ins (energy, overwhelm, notes) to see how she's been trending.",
     input_schema: { type: "object", properties: { limit: { type: "number" } } },
+  },
+  {
+    name: "get_attention_history",
+    description: "Dated history of logged attention/activity, ordered by when it actually HAPPENED (not when entered). This is the source for 'when did I last work out?', 'how consistent was I in May?', 'what's my workout frequency over time?'. Filter by role_name and/or type (e.g. focused_work for workouts) and/or since_days.",
+    input_schema: {
+      type: "object",
+      properties: {
+        role_name: { type: "string" },
+        type: { type: "string", enum: ["focused_work", "progress", "planning", "thinking", "relationship", "maintenance", "rest"] },
+        since_days: { type: "number" },
+        limit: { type: "number" },
+      },
+    },
   },
   {
     name: "get_ideas",
@@ -792,15 +808,47 @@ async function runTool(
     const role = matchRole(input.role_name as string, roles);
     if (!role) return j({ ok: false, error: "No matching role.", roles: roles.map((r) => r.name) });
     const projectId = await resolveProjectId(role.id, input.project_name as string | undefined);
+    const attentionType = (input.attention_type as AttentionType) ?? "focused_work";
+    const durationMinutes = (input.duration_minutes as number) ?? null;
+    const notes = (input.notes as string) ?? null;
+
+    // Bulk backfill: one event per supplied date (off a screenshot/calendar).
+    const dates = input.occurred_dates as string[] | undefined;
+    if (Array.isArray(dates) && dates.length) {
+      const logged: string[] = [];
+      const skipped: string[] = [];
+      for (const d of dates) {
+        const when = parseOccurredAt(d);
+        if (!when) { skipped.push(d); continue; }
+        await logAttention({ role, attentionType, durationMinutes, projectId, notes, occurredAt: when, conversationId });
+        logged.push(formatDate(when));
+      }
+      return j({ ok: true, summary: `Logged ${logged.length} ${attentionType.replace("_", " ")} entries to ${role.name}: ${logged.join(", ")}`, skipped });
+    }
+
+    const occurredAt = parseOccurredAt(input.occurred_on as string | undefined);
     const { summary } = await logAttention({
       role,
-      attentionType: (input.attention_type as AttentionType) ?? "focused_work",
-      durationMinutes: (input.duration_minutes as number) ?? null,
+      attentionType,
+      durationMinutes,
       projectId,
-      notes: (input.notes as string) ?? null,
+      notes,
+      occurredAt,
       conversationId,
     });
     return j({ ok: true, summary });
+  }
+
+  if (name === "get_attention_history") {
+    return j({
+      ok: true,
+      history: await listAttentionHistory({
+        roleName: input.role_name as string | undefined,
+        type: input.type as AttentionType | undefined,
+        sinceDays: input.since_days as number | undefined,
+        limit: input.limit as number | undefined,
+      }),
+    });
   }
 
   if (name === "create_task") {

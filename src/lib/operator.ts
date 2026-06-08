@@ -109,8 +109,10 @@ export async function logAttention(input: {
   durationMinutes?: number | null;
   projectId?: string | null;
   notes?: string | null;
+  occurredAt?: Date | null; // when it actually happened (defaults to now)
   conversationId?: string | null;
 }) {
+  const occurredAt = input.occurredAt ?? new Date();
   const [event] = await db
     .insert(attentionTable)
     .values({
@@ -119,16 +121,23 @@ export async function logAttention(input: {
       attentionType: input.attentionType,
       durationMinutes: input.durationMinutes ?? null,
       notes: input.notes ?? null,
+      occurredAt,
       source: "chat",
     })
     .returning();
-  await db
-    .update(rolesTable)
-    .set({ lastMeaningfulAttentionAt: new Date(), updatedAt: new Date() })
-    .where(eq(rolesTable.id, input.role.id));
+  // The role's "last meaningful attention" should reflect the most recent activity
+  // by when it HAPPENED — only advance it if this event is newer than what's stored.
+  const [r] = await db.select().from(rolesTable).where(eq(rolesTable.id, input.role.id)).limit(1);
+  if (!r?.lastMeaningfulAttentionAt || occurredAt > r.lastMeaningfulAttentionAt) {
+    await db
+      .update(rolesTable)
+      .set({ lastMeaningfulAttentionAt: occurredAt, updatedAt: new Date() })
+      .where(eq(rolesTable.id, input.role.id));
+  }
 
   const dur = input.durationMinutes ? ` (${input.durationMinutes} min)` : "";
-  const summary = `Logged ${input.attentionType.replace("_", " ")} attention to ${input.role.name}${dur}`;
+  const backlog = input.occurredAt ? ` on ${formatDate(occurredAt)}` : "";
+  const summary = `Logged ${input.attentionType.replace("_", " ")} attention to ${input.role.name}${dur}${backlog}`;
   await logActivity({
     actionKind: "log_attention",
     summary,
@@ -834,6 +843,45 @@ export async function listActivity(query?: string, limit = 20) {
 export async function listCheckins(limit = 10) {
   const rows = await db.select().from(checkinsTable).orderBy(desc(checkinsTable.checkinDate), desc(checkinsTable.createdAt)).limit(limit);
   return rows.map((c) => ({ date: c.checkinDate, energy: c.energyLevel, overwhelm: c.overwhelmLevel, notes: c.notes }));
+}
+
+/* --------------------- Attention history (dated read) ------------------ */
+
+/**
+ * Dated attention/activity history — ordered by when it actually HAPPENED
+ * (occurredAt), not when it was entered. This is what answers "when did I last
+ * work out?", "how consistent was I in May?", "frequency over time".
+ */
+export async function listAttentionHistory(opts?: {
+  roleName?: string;
+  type?: AttentionType;
+  sinceDays?: number;
+  limit?: number;
+}) {
+  const roles = await activeRoles();
+  const roleName = new Map(roles.map((r) => [r.id, r.name]));
+  const role = opts?.roleName ? matchRole(opts.roleName, roles) : null;
+
+  const rows = await db
+    .select()
+    .from(attentionTable)
+    .orderBy(desc(attentionTable.occurredAt))
+    .limit(500);
+
+  const since = opts?.sinceDays != null ? Date.now() - opts.sinceDays * 24 * 60 * 60 * 1000 : null;
+  return rows
+    .filter((e) => !role || e.roleId === role.id)
+    .filter((e) => !opts?.type || e.attentionType === opts.type)
+    .filter((e) => since == null || e.occurredAt.getTime() >= since)
+    .slice(0, opts?.limit ?? 50)
+    .map((e) => ({
+      date: formatDate(e.occurredAt),
+      role: roleName.get(e.roleId) ?? null,
+      type: e.attentionType,
+      durationMinutes: e.durationMinutes,
+      notes: e.notes,
+      enteredOn: formatDate(e.createdAt),
+    }));
 }
 
 /* ----------------------------- Ideas (more) ---------------------------- */

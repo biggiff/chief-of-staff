@@ -34,6 +34,20 @@ function zonedWallToUtc(wall: string, tz: string): Date {
   return new Date(asUtc.getTime() - tzOffsetMs(asUtc, tz));
 }
 
+/**
+ * Parse a date the user/Scout gives for WHEN something happened into an instant.
+ * Accepts "YYYY-MM-DD" (interpreted at noon in the user's tz to avoid day-shift)
+ * or any Date-parseable string. Returns null if unparseable.
+ */
+export function parseOccurredAt(input: string | null | undefined): Date | null {
+  if (!input) return null;
+  const s = input.trim();
+  const ymd = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymd) return zonedWallToUtc(`${s}T12:00:00`, appTimeZone());
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 /** Start/end instants of "today" in the user's timezone. */
 export function startEndOfToday(): { start: Date; end: Date } {
   const tz = appTimeZone();

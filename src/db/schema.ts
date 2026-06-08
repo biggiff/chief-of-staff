@@ -46,6 +46,8 @@ export type AttentionType =
 export type Confidence = "high" | "medium" | "low";
 export type ProposedUpdateStatus = "pending" | "applied" | "rejected" | "dismissed";
 export type InsightStatus = "open" | "surfaced" | "dismissed" | "resolved";
+export type MemoryType = "identity" | "learned_pattern" | "temporary_context";
+export type MemoryStatus = "active" | "archived" | "superseded";
 
 /* -------------------------------- Roles -------------------------------- */
 
@@ -316,6 +318,37 @@ export const workingAgreements = pgTable("working_agreements", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* ------------------------------ Memories ------------------------------- */
+
+/**
+ * Tiered long-term memory (Phase 3.6). The goal is BETTER memory, not more:
+ * Scout promotes only statements with durable value, classified by type.
+ *
+ * Tier map across Compass:
+ *  - Conversation Archive → the `messages` table (stored + searchable; NOT active memory).
+ *  - Operating Rules      → the `working_agreements` table (always loaded, binding).
+ *  - Identity / Learned Patterns / Temporary Context → THIS table.
+ *
+ * Learned patterns carry `confidence` + `evidence` and are revisable/removable.
+ * Temporary context carries `expiresAt` and drops out of context once expired.
+ */
+export const memories = pgTable("memories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  type: text("type").$type<MemoryType>().notNull(), // identity | learned_pattern | temporary_context
+  content: text("content").notNull(), // the memory itself, phrased durably
+  whyItMatters: text("why_it_matters"), // why this was worth promoting
+  confidence: text("confidence").$type<Confidence>(), // mainly for learned_pattern
+  evidence: text("evidence"), // supporting evidence for a learned pattern
+  roleId: uuid("role_id").references(() => roles.id, { onDelete: "set null" }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }), // temporary_context only
+  status: text("status").$type<MemoryStatus>().notNull().default("active"), // active | archived | superseded
+  supersededById: uuid("superseded_by_id"),
+  source: text("source").notNull().default("chat"), // chat | promotion | manual | engine
+  changeHistory: jsonb("change_history"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* -------------------- Todoist project mapping layer -------------------- */
 
 export const todoistProjectLinks = pgTable("todoist_project_links", {
@@ -352,3 +385,5 @@ export type ActivityLog = typeof activityLog.$inferSelect;
 export type TodoistProjectLink = typeof todoistProjectLinks.$inferSelect;
 export type WorkingAgreement = typeof workingAgreements.$inferSelect;
 export type CrossroadDiscussion = typeof crossroadDiscussions.$inferSelect;
+export type Memory = typeof memories.$inferSelect;
+export type NewMemory = typeof memories.$inferInsert;

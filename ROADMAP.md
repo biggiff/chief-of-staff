@@ -51,3 +51,24 @@ Ideas, Crossroads, Observations, Check-ins, Activity Log, or Working Agreements.
   extends that to *input* — the user never has to phrase things in Compass terms.
 - Success test: the five example questions above each return a correct,
   synthesized answer without the user naming any entity.
+
+---
+
+## Phase 3.6 — Tiered Memory + Promotion (done)
+
+Goal: better memory, not more. Five tiers, with active promotion.
+
+| Tier | Where it lives | Notes |
+|---|---|---|
+| Conversation Archive | `messages` table (+ `search_conversations` tool) | stored + searchable; NOT active memory |
+| Operating Rules | `working_agreements` | always loaded, binding (highest weight) |
+| Identity Memory | `memories` (type=identity) | durable truths; persist until changed |
+| Learned Patterns | `memories` (type=learned_pattern) | require confidence + evidence; revisable |
+| Temporary Context | `memories` (type=temporary_context) | `expiresAt`; auto-drops when stale |
+
+Promotion: Scout watches for durable-value statements, classifies the tier,
+explains why, and either saves directly (on strong signals — "remember this",
+"going forward", "don't do this again", "this is important") or proposes first.
+Poor candidates (groceries, one-off venting, casual brainstorming) are not
+promoted. Tools: promote_memory, get_memories, manage_memory (revise/forget),
+search_conversations — all undoable. Backstage `/memory` page shows every tier.

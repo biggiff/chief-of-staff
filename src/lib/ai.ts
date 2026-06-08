@@ -50,6 +50,10 @@ import {
   listCheckins,
   listIdeas,
   manageIdea,
+  promoteMemory,
+  listMemories,
+  manageMemory,
+  searchConversations,
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
@@ -125,6 +129,16 @@ Role renames: when you rename a role, always pass a reason to manage_role — th
 
 Working agreements: when she tells you how to operate ("always…", "from now on…", "stop doing…", "I prefer…") or corrects your behavior, save it with add_working_agreement so it sticks across sessions, then confirm in one line. The active agreements are listed at the top of the context — treat them as binding.
 
+MEMORY — promote the right things, not everything (goal: BETTER memory, not more). You actively watch for statements worth keeping long-term and promote them with promote_memory, choosing the tier:
+- identity — durable truths about who she is: values, goals, stable preferences, life structure, major life changes, settled role definitions. ("I want to be more present with my kids", "I'm winding the bakery down to focus on the app.")
+- operating_rule — how you should operate (this routes to your binding rules). Same trigger as working agreements; use either.
+- learned_pattern — a recurring tendency you've actually observed. REQUIRES a confidence level AND the evidence you're basing it on. Phrase as revisable, not fact. ("When she's excited about a new project, relationships tend to get crowded out — medium confidence, seen with the app vs. Mandy and before with Founder.")
+- temporary_context — matters now but will expire: an active build, a recalibration, an upcoming trip/deadline. Set expires_in_days so it self-clears.
+STRONG SIGNALS — when she says anything like "remember this", "this is important", "don't do this again", "going forward", "from now on", treat it as an explicit promote: classify the tier, save it directly, confirm in ONE line (no need to ask first).
+OTHERWISE, when something seems to have lasting value but she didn't flag it, PROPOSE rather than assume: name what you'd keep, the tier, and why, in one human line — "Want me to remember that you're trying to be more present with the kids? Feels like a lasting one." — and save on yes.
+DO NOT promote: grocery items, one-off venting/frustration, casual brainstorming, or anything with no future value. If you're not sure it'll matter next month, don't store it (or make it temporary_context).
+REVISING: if she corrects a remembered fact or a pattern stops holding, use manage_memory (update the content/confidence, or archive it). Memory is revisable — keep it honest, not just growing. To recall, use get_memories; for older un-promoted discussion, search_conversations.
+
 Understanding her, not her vocabulary (this matters a lot): she will NEVER speak in Compass terms. She asks like a person — "what's going on with Mom?", "what am I avoiding?", "what keeps coming up?", "what's slipping?", "anything weird lately?", "what should I focus on?", "what changed this week?". Your job is to figure out what she's really asking and pull the right information yourself.
 - For these open-ended "how are things / what's going on / what am I missing" questions, call answer_about — it gathers across the right systems in one shot. Pass topic when she names a person/area ("Mom", "App Developer", "the bakery"); leave topic empty for broad questions about her whole life ("what am I avoiding?", "what's slipping?", "what should I focus on?"). For "anything I should pay attention to?" you can also lean on get_or_generate_briefing.
 - Rough map (you don't need to recite it, just route well): "going on with X" → answer_about(X). "avoiding / slipping / falling through cracks / missing" → answer_about() whole-life (overdue + avoided tasks + neglected roles + observations). "what keeps coming up / what do you keep noticing" → answer_about() (observations + crossroads). "what decisions am I stuck on" → search_crossroads. "what changed this week" → answer_about() / get_activity. When a question is genuinely ambiguous ("what's going on?"), default to the whole-life answer_about rather than asking her to clarify.
@@ -167,9 +181,35 @@ async function buildContext(): Promise<string> {
     .from(agreementsTable)
     .where(eq(agreementsTable.status, "active"));
   if (agreements.length) {
-    lines.push("WORKING AGREEMENTS — Selena's standing instructions for how you operate. Follow these:");
+    lines.push("OPERATING RULES — Selena's binding standing instructions for how you operate. These are the highest-priority memory tier; always follow them:");
     for (const a of agreements) lines.push(`- ${a.text}`);
     lines.push("");
+  }
+
+  // Long-term memory tiers (Phase 3.6): identity, learned patterns, temporary
+  // context. Expired temporary context is auto-dropped by listMemories.
+  try {
+    const mem = await listMemories();
+    const identity = mem.filter((m) => m.type === "identity");
+    const patterns = mem.filter((m) => m.type === "learned_pattern");
+    const temp = mem.filter((m) => m.type === "temporary_context");
+    if (identity.length) {
+      lines.push("IDENTITY — durable truths about Selena (values, goals, preferences, life structure). Treat as true unless she says otherwise:");
+      for (const m of identity) lines.push(`- ${m.content}`);
+      lines.push("");
+    }
+    if (patterns.length) {
+      lines.push("LEARNED PATTERNS — tendencies you've observed (with confidence; revisable — don't treat as certainties, and update them if she pushes back):");
+      for (const m of patterns) lines.push(`- [${m.confidence ?? "medium"}] ${m.content}${m.evidence ? ` (evidence: ${m.evidence})` : ""}`);
+      lines.push("");
+    }
+    if (temp.length) {
+      lines.push("RIGHT NOW — temporary context that matters currently but may expire:");
+      for (const m of temp) lines.push(`- ${m.content}${m.expiresAt ? ` (until ${formatDate(m.expiresAt)})` : ""}`);
+      lines.push("");
+    }
+  } catch (err) {
+    console.error("memory load failed", err);
   }
 
   lines.push("COMPASS STATE (computed by the rule-based engine):");
@@ -487,6 +527,55 @@ const TOOLS: Anthropic.Tool[] = [
       },
       required: ["text"],
     },
+  },
+  {
+    name: "promote_memory",
+    description:
+      "Commit something to long-term memory once it's worth keeping. Use for durable value: identity (who she is — values, goals, stable preferences, life structure), learned_pattern (a recurring tendency you've observed — REQUIRES confidence + evidence), or temporary_context (matters now, may expire — set expires_in_days). For how-you-should-operate rules, pass type=operating_rule (routes to the binding rules tier). Do NOT promote grocery items, one-off frustrations, casual brainstorming, or details with no future value. When she signals 'remember this / going forward / don't do this again / this is important', save directly and confirm in one line; otherwise propose it first ('want me to remember that…?') and save on yes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["identity", "operating_rule", "learned_pattern", "temporary_context"] },
+        content: { type: "string", description: "The memory, phrased durably in plain language." },
+        why: { type: "string", description: "Why this matters / is worth keeping." },
+        confidence: { type: "string", enum: ["low", "medium", "high"], description: "Required for learned_pattern." },
+        evidence: { type: "string", description: "Supporting evidence for a learned_pattern (what you've seen)." },
+        role_name: { type: "string", description: "Optional role this is about." },
+        expires_in_days: { type: "number", description: "For temporary_context — when it should stop loading." },
+      },
+      required: ["type", "content"],
+    },
+  },
+  {
+    name: "get_memories",
+    description: "Read/search long-term memory (identity, learned_pattern, temporary_context). Use to answer 'what do you know/remember about me / my goals / my patterns'. Operating rules live separately (they're always in your context already).",
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["identity", "learned_pattern", "temporary_context"] },
+        query: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "manage_memory",
+    description: "Revise or remove a stored memory (find it by query). action=update to correct it (e.g. raise/lower a pattern's confidence, fix the content); action=archive to forget it. Use when she corrects a remembered fact or a pattern no longer holds. Undoable.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["update", "archive"] },
+        query: { type: "string" },
+        content: { type: "string" },
+        confidence: { type: "string", enum: ["low", "medium", "high"] },
+        evidence: { type: "string" },
+      },
+      required: ["action", "query"],
+    },
+  },
+  {
+    name: "search_conversations",
+    description: "Search the conversation archive (past messages — stored but not active memory). Use for 'when did we talk about…', 'what did I say about…', recovering past discussion not promoted to memory.",
+    input_schema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] },
   },
   {
     name: "undo_last",
@@ -831,6 +920,49 @@ async function runTool(
       conversationId,
     });
     return j({ ok: true, summary });
+  }
+
+  if (name === "promote_memory") {
+    const role = input.role_name ? matchRole(input.role_name as string, roles) : null;
+    const days = input.expires_in_days as number | undefined;
+    const expiresAt = days != null ? new Date(Date.now() + days * 24 * 60 * 60 * 1000) : null;
+    const res = await promoteMemory({
+      type: input.type as "identity" | "operating_rule" | "learned_pattern" | "temporary_context",
+      content: input.content as string,
+      why: (input.why as string) ?? null,
+      confidence: (input.confidence as "low" | "medium" | "high") ?? null,
+      evidence: (input.evidence as string) ?? null,
+      role,
+      expiresAt,
+      conversationId,
+    });
+    return j({ ok: true, ...res });
+  }
+
+  if (name === "get_memories") {
+    return j({
+      ok: true,
+      memories: await listMemories({
+        type: input.type as "identity" | "learned_pattern" | "temporary_context" | undefined,
+        query: input.query as string | undefined,
+      }),
+    });
+  }
+
+  if (name === "manage_memory") {
+    const res = await manageMemory({
+      action: input.action as "update" | "archive",
+      query: input.query as string,
+      content: input.content as string | undefined,
+      confidence: (input.confidence as "low" | "medium" | "high") ?? null,
+      evidence: (input.evidence as string) ?? null,
+      conversationId,
+    });
+    return j(res);
+  }
+
+  if (name === "search_conversations") {
+    return j({ ok: true, results: await searchConversations(input.query as string, (input.limit as number) ?? 12) });
   }
 
   if (name === "undo_last") {

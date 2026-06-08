@@ -13,9 +13,13 @@ import {
   crossroadDiscussions as discussionsTable,
   insights as insightsTable,
   activityLog as activityTable,
+  memories as memoriesTable,
+  messages as messagesTable,
   type AttentionType,
   type Priority,
   type Role,
+  type MemoryType,
+  type Confidence,
 } from "@/db";
 import {
   createTodoistTask,
@@ -838,6 +842,169 @@ export async function manageIdea(input: {
 
 /* -------------------------------- Undo --------------------------------- */
 
+/* ------------------------------ Memories ------------------------------- */
+
+const TIER_LABEL: Record<string, string> = {
+  identity: "who she is",
+  learned_pattern: "a pattern",
+  temporary_context: "for now",
+};
+
+/**
+ * Promote a statement to long-term memory. Operating Rules are NOT stored here —
+ * they route to working_agreements (always-loaded, binding). identity /
+ * learned_pattern / temporary_context land in the memories table.
+ */
+export async function promoteMemory(input: {
+  type: MemoryType | "operating_rule";
+  content: string;
+  why?: string | null;
+  confidence?: Confidence | null;
+  evidence?: string | null;
+  role?: Role | null;
+  expiresAt?: Date | null;
+  conversationId?: string | null;
+}) {
+  // Operating rules live with the working agreements (the binding tier).
+  if (input.type === "operating_rule") {
+    const res = await addWorkingAgreement({
+      text: input.content,
+      category: "behavior",
+      conversationId: input.conversationId,
+    });
+    return { ...res, type: "operating_rule" as const };
+  }
+
+  const [row] = await db
+    .insert(memoriesTable)
+    .values({
+      type: input.type,
+      content: input.content.slice(0, 1000),
+      whyItMatters: input.why ?? null,
+      confidence: input.type === "learned_pattern" ? input.confidence ?? "medium" : null,
+      evidence: input.evidence ?? null,
+      roleId: input.role?.id ?? null,
+      expiresAt: input.type === "temporary_context" ? input.expiresAt ?? null : null,
+      source: "promotion",
+    })
+    .returning();
+
+  const summary = `Remembered (${TIER_LABEL[input.type] ?? input.type}): "${input.content.slice(0, 80)}"`;
+  await logActivity({
+    actionKind: "memory_create",
+    summary,
+    entityTable: "memories",
+    entityId: row.id,
+    undoPayload: { id: row.id },
+    conversationId: input.conversationId,
+  });
+  return { summary, type: input.type, id: row.id };
+}
+
+/** Read/search memories. Auto-expires stale temporary context as a side effect. */
+export async function listMemories(opts?: { type?: MemoryType; query?: string; includeArchived?: boolean }) {
+  const rows = await db.select().from(memoriesTable).orderBy(desc(memoriesTable.createdAt));
+  const roles = await activeRoles();
+  const roleName = new Map(roles.map((r) => [r.id, r.name]));
+  const now = Date.now();
+  const q = opts?.query?.toLowerCase().trim();
+
+  // Lazily archive expired temporary context so it stops loading into context.
+  const expired = rows.filter(
+    (m) => m.status === "active" && m.expiresAt && new Date(m.expiresAt).getTime() < now
+  );
+  for (const m of expired) {
+    await db.update(memoriesTable).set({ status: "archived", updatedAt: new Date() }).where(eq(memoriesTable.id, m.id));
+    m.status = "archived";
+  }
+
+  return rows
+    .filter((m) => (opts?.includeArchived ? true : m.status === "active"))
+    .filter((m) => !opts?.type || m.type === opts.type)
+    .filter((m) => !q || m.content.toLowerCase().includes(q) || (m.evidence ?? "").toLowerCase().includes(q) || (m.whyItMatters ?? "").toLowerCase().includes(q))
+    .map((m) => ({
+      type: m.type,
+      content: m.content,
+      why: m.whyItMatters,
+      confidence: m.confidence,
+      evidence: m.evidence,
+      role: m.roleId ? roleName.get(m.roleId) ?? null : null,
+      expiresAt: m.expiresAt ? m.expiresAt.toISOString() : null,
+      status: m.status,
+    }));
+}
+
+/** Fuzzy-find one memory by text (for revise/remove). */
+async function findMemory(query: string) {
+  const rows = await db.select().from(memoriesTable).where(eq(memoriesTable.status, "active"));
+  const q = query.toLowerCase().trim();
+  return (
+    rows.find((m) => m.content.toLowerCase() === q) ||
+    rows.find((m) => m.content.toLowerCase().includes(q)) ||
+    rows.find((m) => q.includes(m.content.toLowerCase().slice(0, 30))) ||
+    null
+  );
+}
+
+/** Revise (supersede) or remove (archive) a memory — learned patterns are revisable. */
+export async function manageMemory(input: {
+  action: "update" | "archive";
+  query: string;
+  content?: string;
+  confidence?: Confidence | null;
+  evidence?: string | null;
+  conversationId?: string | null;
+}) {
+  const m = await findMemory(input.query);
+  if (!m) return { ok: false, message: `Couldn't find a memory matching "${input.query}".` };
+
+  const prev = { content: m.content, confidence: m.confidence, evidence: m.evidence, status: m.status };
+
+  if (input.action === "archive") {
+    await db.update(memoriesTable).set({ status: "archived", updatedAt: new Date() }).where(eq(memoriesTable.id, m.id));
+  } else {
+    const history = Array.isArray(m.changeHistory) ? (m.changeHistory as unknown[]) : [];
+    await db
+      .update(memoriesTable)
+      .set({
+        content: input.content?.slice(0, 1000) ?? m.content,
+        confidence: input.confidence ?? m.confidence,
+        evidence: input.evidence ?? m.evidence,
+        changeHistory: [...history, { at: new Date().toISOString(), prev }] as never,
+        updatedAt: new Date(),
+      })
+      .where(eq(memoriesTable.id, m.id));
+  }
+
+  const summary = input.action === "archive"
+    ? `Forgot a memory: "${m.content.slice(0, 80)}"`
+    : `Updated a memory: "${(input.content ?? m.content).slice(0, 80)}"`;
+  await logActivity({
+    actionKind: "memory_manage",
+    summary,
+    entityTable: "memories",
+    entityId: m.id,
+    undoPayload: { id: m.id, prev },
+    conversationId: input.conversationId,
+  });
+  return { ok: true, message: summary };
+}
+
+/** Search the conversation archive (stored messages — not active memory). */
+export async function searchConversations(query: string, limit = 12) {
+  const rows = await db
+    .select()
+    .from(messagesTable)
+    .where(ilike(messagesTable.content, `%${query}%`))
+    .orderBy(desc(messagesTable.createdAt))
+    .limit(limit);
+  return rows.map((m) => ({
+    who: m.role === "user" ? "Selena" : m.role === "chief_of_staff" ? "Scout" : "system",
+    when: m.createdAt.toISOString(),
+    text: m.content.slice(0, 240),
+  }));
+}
+
 export async function undoLast(): Promise<{ ok: boolean; message: string }> {
   const [last] = await db
     .select()
@@ -945,6 +1112,17 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
       case "observation":
         await db.delete(insightsTable).where(eq(insightsTable.id, p.id as string));
         break;
+      case "memory_create":
+        await db.delete(memoriesTable).where(eq(memoriesTable.id, p.id as string));
+        break;
+      case "memory_manage": {
+        const prev = p.prev as { content: string; confidence: string | null; evidence: string | null; status: string };
+        await db
+          .update(memoriesTable)
+          .set({ content: prev.content, confidence: prev.confidence as never, evidence: prev.evidence, status: prev.status as never, updatedAt: new Date() })
+          .where(eq(memoriesTable.id, p.id as string));
+        break;
+      }
       case "idea_manage": {
         const id = p.id as string;
         const prev = p.prev as { title?: string; status: string };

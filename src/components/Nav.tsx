@@ -14,6 +14,7 @@ const BACKSTAGE: Item[] = [
   { href: "/ideas", label: "Ideas" },
   { href: "/crossroads", label: "Crossroads" },
   { href: "/agreements", label: "Working Agreements" },
+  { href: "/memory", label: "Memory" },
   { href: "/checkin", label: "Check-ins" },
   { href: "/briefing", label: "Briefings" },
   { href: "/observations", label: "Observations" },

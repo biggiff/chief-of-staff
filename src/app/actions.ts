@@ -16,6 +16,7 @@ import {
   insights,
   briefings,
   workingAgreements,
+  memories,
 } from "@/db";
 import { generateBriefing } from "@/lib/briefing";
 import { todayStr } from "@/lib/dates";
@@ -400,6 +401,14 @@ export async function resolveObservation(fd: FormData) {
   const id = str(fd, "id");
   await db.update(insights).set({ status: "resolved", updatedAt: new Date() }).where(eq(insights.id, id));
   revalidatePath("/observations");
+}
+
+/* -------------------------------- Memory ---------------------------------- */
+
+export async function archiveMemory(fd: FormData) {
+  const id = str(fd, "id");
+  await db.update(memories).set({ status: "archived", updatedAt: new Date() }).where(eq(memories.id, id));
+  revalidatePath("/memory");
 }
 
 /* --------------------------- Working agreements ---------------------------- */

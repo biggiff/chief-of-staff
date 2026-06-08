@@ -79,6 +79,12 @@ export function aiEnabled(): boolean {
 
 const MODEL = process.env.COS_AI_MODEL || "claude-opus-4-8";
 
+// Decision/crossroads questions must hit the authoritative crossroads source, not
+// base context. This pattern triggers a deterministic crossroads query (see the
+// chat loop). Keep it broad — false positives just cost one extra read.
+const DECISION_INTENT =
+  /\b(decisions?|decid(?:e|es|ing|ed)|undecided|crossroads?|wrestling with|stuck on|torn between|back and forth|haven'?t decided|still deciding|keeps? coming back up|keep coming back up|not decided yet|unresolved|deliberating|on the fence|figuring out whether|trying to decide|weighing)\b/i;
+
 // Canonical Scout voice (see memory: scout-personality-and-ux). Reused by the
 // chat brain and the home-screen voicing helper.
 export const SCOUT_VOICE = `You are Scout — a warm, observant, confident friend who knows Selena's life extremely well and helps her keep her shit together. You are NOT a productivity coach, therapist, corporate consultant, or a bot that reports information. You're the friend who's known her for years, remembers her goals, and notices her patterns.
@@ -121,6 +127,8 @@ No duplicate tasks: when create_task reports duplicateFound, do NOT create anoth
 Email (Gmail): you can read her mail across all folders (search_emails uses Gmail search syntax — use "in:anywhere" to include all folders/spam/trash, plus operators like from:, subject:, is:unread, newer_than:7d, label:), open a specific message (read_email), and create drafts (create_email_draft). SENDING is different: NEVER call send_email without her explicit go-ahead in the conversation. Default to writing the draft and asking "Want me to send it?" — only send_email after she clearly says yes. Summarize, don't dump raw headers.
 
 Email labels = life areas. She labels forwarded mail by which part of her life it's from (e.g. Bakery, PTO, Founder). search_emails and read_email return each email's labels — surface them and use them to route/group ("3 unread under PTO"). To filter by one, search with label:"Name" (use list_email_labels if you need the exact names).
+
+Crossroads — ALWAYS QUERY, NEVER RECALL: any question about her decisions MUST start with search_crossroads before you answer — no exceptions, and never answer "you have none / it's empty" from context (crossroads are NOT in your base context, so "I don't see any" means you haven't looked). This covers every phrasing: "what decisions am I wrestling with / stuck on / still deciding / haven't I decided / am I deliberating on", "what's unresolved", "what crossroads exist", "what keeps coming back up", "what am I torn on / on the fence about". Call search_crossroads (no query, or a broad one), report the active ones, then add get_crossroad for detail/recap as needed. If it genuinely returns none, only then say there are none.
 
 Crossroads (recurring decisions — the anti-re-litigation engine): when she raises a real decision (e.g. the bakery's future, Doughrway/App direction, PTO involvement level, a health-strategy or major family decision), FIRST search_crossroads to see if it already exists.
 - If it EXISTS, this is the most important behavior: your FIRST move is to RECAP, before any new advice. Call get_crossroad, then literally open your reply with "We've been here before" (or similar) and summarize: where you landed last time (prior leaning), the unresolved concerns, and — if she's said something new — how this time differs. Do NOT jump straight to fresh opinions, and do NOT skip the recap.
@@ -932,7 +940,16 @@ async function runTool(
   }
 
   if (name === "search_crossroads") {
-    return j({ ok: true, crossroads: await listCrossroads(input.query as string | undefined) });
+    const q = input.query as string | undefined;
+    let crossroads = await listCrossroads(q);
+    let note: string | undefined;
+    // Never answer a decision question with a false "empty": if a narrowing query
+    // matched nothing, fall back to ALL active crossroads.
+    if (q && crossroads.length === 0) {
+      crossroads = await listCrossroads();
+      note = "No crossroad title matched that query, so here are all active crossroads.";
+    }
+    return j({ ok: true, crossroads, note });
   }
 
   if (name === "get_crossroad") {
@@ -1354,14 +1371,23 @@ export async function generateAIResponse(
   const messages: Anthropic.MessageParam[] = [...priorTurns, latest];
   const toolsUsed: string[] = [];
 
+  // Retrieval discipline: decision/crossroads questions must NOT be answered from
+  // base context (crossroads aren't in it). Detect that intent and DETERMINISTICALLY
+  // force a crossroads query on the first turn, rather than hoping the prompt holds.
+  const forceCrossroads = DECISION_INTENT.test(userText);
+
   // Generous cap: cross-source synthesis can read many tools, then act + answer.
   for (let i = 0; i < 12; i++) {
+    // Force the crossroads read on turn 0 for decision questions. tool_choice for a
+    // specific tool requires thinking disabled, so we turn it off for just that call.
+    const forcingNow = forceCrossroads && i === 0;
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      thinking: { type: "adaptive" },
+      thinking: forcingNow ? { type: "disabled" } : { type: "adaptive" },
       system: `${SYSTEM_PROMPT}\n\n${context}`,
       tools: TOOLS,
+      ...(forcingNow ? { tool_choice: { type: "tool" as const, name: "search_crossroads" } } : {}),
       messages,
     });
 

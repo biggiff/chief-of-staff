@@ -9,8 +9,14 @@ export async function middleware(req: NextRequest) {
   if (!authEnabled()) return NextResponse.next();
 
   const { pathname } = req.nextUrl;
-  // Login + the PWA manifest must be reachable while logged out.
-  if (pathname === "/login" || pathname === "/api/login" || pathname === "/manifest.webmanifest") {
+  // Login + the PWA manifest must be reachable while logged out. The weekly cron
+  // route self-authenticates via CRON_SECRET, so it bypasses the password gate.
+  if (
+    pathname === "/login" ||
+    pathname === "/api/login" ||
+    pathname === "/manifest.webmanifest" ||
+    pathname === "/api/weekly/generate"
+  ) {
     return NextResponse.next();
   }
 

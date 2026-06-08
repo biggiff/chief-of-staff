@@ -110,18 +110,22 @@ async function fetchEventsForCalendar(token: string, cal: CalendarInfo, start: D
   }));
 }
 
-/** Today's events across ALL connected calendars (primary + subscribed), merged. */
-export async function listTodaysEvents(): Promise<CalEvent[]> {
+/** Events across ALL connected calendars within an arbitrary range, merged. */
+export async function listEventsBetween(start: Date, end: Date): Promise<CalEvent[]> {
   if (!calendarEnabled()) return [];
   const token = await getAccessToken();
   const cals = await listCalendars();
   const targets = cals.length ? cals : [{ id: "primary", name: "Calendar", primary: true }];
-
-  const { start, end } = startEndOfToday();
   const perCal = await Promise.all(targets.map((c) => fetchEventsForCalendar(token, c, start, end)));
   const merged = perCal.flat();
   merged.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
   return merged;
+}
+
+/** Today's events across ALL connected calendars (primary + subscribed), merged. */
+export async function listTodaysEvents(): Promise<CalEvent[]> {
+  const { start, end } = startEndOfToday();
+  return listEventsBetween(start, end);
 }
 
 /** One-line-per-event summary for the AI context / tool result. Non-primary

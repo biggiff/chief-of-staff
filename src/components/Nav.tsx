@@ -17,6 +17,7 @@ const BACKSTAGE: Item[] = [
   { href: "/memory", label: "Memory" },
   { href: "/checkin", label: "Check-ins" },
   { href: "/briefing", label: "Briefings" },
+  { href: "/weekly", label: "Weekly Review" },
   { href: "/observations", label: "Observations" },
   { href: "/review", label: "Review" },
   { href: "/integrations", label: "Integrations" },

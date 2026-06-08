@@ -403,6 +403,14 @@ export async function resolveObservation(fd: FormData) {
   revalidatePath("/observations");
 }
 
+/* ----------------------------- Weekly review ------------------------------ */
+
+export async function regenerateWeekly() {
+  const { generateWeeklyReview } = await import("@/lib/weekly-review");
+  await generateWeeklyReview();
+  revalidatePath("/weekly");
+}
+
 /* -------------------------------- Memory ---------------------------------- */
 
 export async function archiveMemory(fd: FormData) {

@@ -355,6 +355,26 @@ export const memories = pgTable("memories", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* ------------------------- Weekly review ------------------------------- */
+
+/**
+ * The Weekly Chief-of-Staff Briefing (Phase 3.8) — comparative, not a snapshot.
+ * One row per week. `snapshot` stores the structured metrics so NEXT week can
+ * diff against it; `priorities` stores this week's "attention next week" items so
+ * next week can close the loop on them.
+ */
+export const weeklyReviews = pgTable("weekly_reviews", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  weekOf: date("week_of").notNull(), // the review date (the Sunday it covers through)
+  narrative: text("narrative").notNull(), // the voiced 5-section review
+  throughline: text("throughline"),
+  biggestQuestion: text("biggest_question"),
+  priorities: jsonb("priorities"), // [{ item, why }] — checked for follow-through next week
+  snapshot: jsonb("snapshot"), // structured metrics for next week's diff
+  openedAt: timestamp("opened_at", { withTimezone: true }), // when she viewed it (for the nudge)
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* --------------------- Process memory / workflow state ----------------- */
 
 /**
@@ -415,3 +435,5 @@ export type Memory = typeof memories.$inferSelect;
 export type NewMemory = typeof memories.$inferInsert;
 export type WorkflowState = typeof workflowStates.$inferSelect;
 export type NewWorkflowState = typeof workflowStates.$inferInsert;
+export type WeeklyReview = typeof weeklyReviews.$inferSelect;
+export type NewWeeklyReview = typeof weeklyReviews.$inferInsert;

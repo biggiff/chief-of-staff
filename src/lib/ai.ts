@@ -61,6 +61,7 @@ import {
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
+import { getLatestWeeklyReview, getOrGenerateWeeklyReview } from "./weekly-review";
 import { formatDate, startEndOfToday, todayStr, appTimeZone, parseOccurredAt } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
@@ -195,6 +196,20 @@ async function buildContext(): Promise<string> {
   // Ground every chronology answer in the real current date (her timezone).
   lines.push(`Today is ${formatDate(todayStr())} (timezone ${appTimeZone()}). Use this for any "today / this week / how long since" reasoning — do not guess the date.`);
   lines.push("");
+
+  // Proactive nudge: a fresh weekly review she hasn't opened yet.
+  try {
+    const wr = await getLatestWeeklyReview();
+    if (wr && !wr.openedAt) {
+      const ageDays = (Date.now() - new Date(wr.weekOf).getTime()) / (24 * 60 * 60 * 1000);
+      if (ageDays <= 3) {
+        lines.push(`NUDGE: Her weekly review (week of ${formatDate(wr.weekOf)}) is ready and she hasn't opened it. If it fits naturally, mention it's up — one line, don't force it. Throughline: ${wr.throughline ?? "—"}`);
+        lines.push("");
+      }
+    }
+  } catch (err) {
+    console.error("weekly nudge check failed", err);
+  }
 
   // Active guided workflow (process memory) — survives chat refresh so a
   // long-running flow like recalibration never loses its place.
@@ -362,6 +377,11 @@ const TOOLS: Anthropic.Tool[] = [
         },
       },
     },
+  },
+  {
+    name: "get_weekly_review",
+    description: "Get this week's Weekly Chief-of-Staff Review (comparative: what changed vs a week ago, where she's fooling herself, what deserves attention next week, what got better, the biggest open question). Use when she asks for her weekly review / 'how was my week' / 'what should I think about this week'. Generates it if not done yet.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "get_or_generate_briefing",
@@ -798,6 +818,11 @@ async function runTool(
 
   if (name === "answer_about") {
     return j(await gatherAbout(input.topic as string | undefined));
+  }
+
+  if (name === "get_weekly_review") {
+    const r = await getOrGenerateWeeklyReview();
+    return j({ ok: true, weekOf: r.weekOf, throughline: r.throughline, review: r.narrative, biggestQuestion: r.biggestQuestion });
   }
 
   if (name === "get_or_generate_briefing") {

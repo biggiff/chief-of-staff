@@ -53,7 +53,7 @@ import {
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
-import { formatDate, startEndOfToday } from "./dates";
+import { formatDate, startEndOfToday, todayStr, appTimeZone } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
 /**
@@ -93,6 +93,8 @@ When in doubt: human over professional, conversational over informative, observa
 const SYSTEM_PROMPT = `${SCOUT_VOICE}
 
 Behind the scenes you quietly maintain Compass (her roles, projects, tasks, attention, decisions, observations) using tools — but you talk like a friend, never like software. You can SEE and CHANGE every part of Compass: use get_compass_overview for the full picture (all roles + projects), and manage_role / manage_project to create, rename, re-prioritize, or archive them. If she says a role is wrong, renamed, duplicated, or missing, fix it directly — never say you can't access something in Compass. You also see the live roles ranked below.
+
+EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers must come from Compass data, not from what you think you remember from the conversation. Before you answer ANY question that involves a date, a timeline, "when", "how long since", "last time", what happened/changed recently, activity history, a task's status (done? still open? due when?), an observation, a crossroad/decision and where it stands, attention history, or the state of any Compass entity — you MUST first call the relevant tool and answer from what it returns. The conversation is NOT a source of truth; it can be stale, partial, or about a different day. Concretely: chronology / "what changed / what did I do" → get_activity (or answer_about); "is X done / what's left / what's due" → get_todoist_tasks (or complete the relevant read); where a decision stands → get_crossroad; recent check-ins/dates → get_checkins; "how are things with X / what am I missing" → answer_about. Do NOT state a date, a count, a status, or a "you did/decided this on…" from memory — look it up. If a tool would tell you and you haven't called it, you don't actually know yet. When you're unsure or the data is thin, say "let me check" and check, or say plainly what you don't have — a quick "let me look" beats a confident wrong answer every time. Use the "Today is…" line below for the current date; never guess it.
 
 How you maintain things (confidence policy):
 - HIGH (she clearly states a fact or request): just do it, confirm in ONE short line. "spent an hour on PTO" → log_attention; "add idea: snack station" → create_idea; "finished the orthodontist call" → complete_task; "add task: order shirts" → create_task; "that's a Parent thing" → reassign.
@@ -153,6 +155,10 @@ async function buildContext(): Promise<string> {
   const briefing = await getLatestBriefing();
 
   const lines: string[] = [];
+
+  // Ground every chronology answer in the real current date (her timezone).
+  lines.push(`Today is ${formatDate(todayStr())} (timezone ${appTimeZone()}). Use this for any "today / this week / how long since" reasoning — do not guess the date.`);
+  lines.push("");
 
   // Working agreements — standing instructions about how Scout should operate.
   // Loaded every session; they take precedence in how you behave.

@@ -74,6 +74,7 @@ export async function createTodoistTask(input: {
   priority?: Priority;
   dueString?: string | null;
   projectId?: string | null;
+  sectionId?: string | null;
 }): Promise<CreatedTodoistTask> {
   const token = todoistToken();
   if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
@@ -81,6 +82,7 @@ export async function createTodoistTask(input: {
   if (input.priority) body.priority = writePriority(input.priority);
   if (input.dueString) body.due_string = input.dueString;
   if (input.projectId) body.project_id = input.projectId;
+  if (input.sectionId) body.section_id = input.sectionId;
   const res = await fetch(`${API}/tasks`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -91,6 +93,80 @@ export async function createTodoistTask(input: {
     throw new Error(`Todoist create ${res.status}: ${t.slice(0, 200)}`);
   }
   return (await res.json()) as CreatedTodoistTask;
+}
+
+/** Move an existing task into a section (used to re-categorize a grocery item). */
+export async function moveTodoistTask(id: string, sectionId: string): Promise<void> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const res = await fetch(`${API}/tasks/${id}/move`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ section_id: sectionId }),
+  });
+  if (!res.ok && res.status !== 204) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Todoist move ${res.status}: ${t.slice(0, 200)}`);
+  }
+}
+
+async function findOrCreateProject(token: string, name: string): Promise<string> {
+  const projects = await paginate<TodoistProject>(token, "projects");
+  const existing = projects.find((p) => p.name.toLowerCase() === name.toLowerCase());
+  if (existing) return existing.id;
+  const res = await fetch(`${API}/projects`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Todoist project create ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  return ((await res.json()) as TodoistProject).id;
+}
+
+async function findOrCreateSection(token: string, projectId: string, name: string, existing: TodoistSection[]): Promise<string> {
+  const match = existing.find((s) => s.project_id === projectId && s.name.toLowerCase() === name.toLowerCase());
+  if (match) return match.id;
+  const res = await fetch(`${API}/sections`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, project_id: projectId }),
+  });
+  if (!res.ok) throw new Error(`Todoist section create ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  return ((await res.json()) as TodoistSection).id;
+}
+
+/**
+ * Ensure a project exists with the given sections (creates what's missing).
+ * Returns the project id and a name→sectionId map. Used for the Grocery setup.
+ */
+export async function ensureProjectWithSections(
+  projectName: string,
+  sectionNames: string[]
+): Promise<{ projectId: string; sections: Record<string, string> }> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const projectId = await findOrCreateProject(token, projectName);
+  const allSections = await paginate<TodoistSection>(token, "sections");
+  const sections: Record<string, string> = {};
+  for (const name of sectionNames) {
+    sections[name] = await findOrCreateSection(token, projectId, name, allSections);
+  }
+  return { projectId, sections };
+}
+
+/** Find an open grocery task by name within a project. */
+export async function findTaskInProject(projectId: string, query: string): Promise<{ id: string; content: string } | null> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const tasks = await fetchActiveTasks(token);
+  const q = query.toLowerCase().trim();
+  const inProj = tasks.filter((t) => t.project_id === projectId);
+  const best =
+    inProj.find((t) => t.content.toLowerCase() === q) ||
+    inProj.find((t) => t.content.toLowerCase().includes(q)) ||
+    inProj.find((t) => q.includes(t.content.toLowerCase())) ||
+    null;
+  return best ? { id: best.id, content: best.content } : null;
 }
 
 async function taskAction(id: string, action: "close" | "reopen"): Promise<void> {

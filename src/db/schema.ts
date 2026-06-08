@@ -355,6 +355,21 @@ export const memories = pgTable("memories", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* ----------------------- Grocery categorization ------------------------ */
+
+/**
+ * Learned grocery placements (Phase 3.9). When Selena moves an item to a
+ * different section, we remember it here so next time that item lands in the
+ * right place — overriding the static dictionary and AI fallback.
+ */
+export const groceryPreferences = pgTable("grocery_preferences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  itemKey: text("item_key").notNull(), // normalized item name (lowercased, trimmed)
+  section: text("section").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* ------------------------- Weekly review ------------------------------- */
 
 /**
@@ -437,3 +452,5 @@ export type WorkflowState = typeof workflowStates.$inferSelect;
 export type NewWorkflowState = typeof workflowStates.$inferInsert;
 export type WeeklyReview = typeof weeklyReviews.$inferSelect;
 export type NewWeeklyReview = typeof weeklyReviews.$inferInsert;
+export type GroceryPreference = typeof groceryPreferences.$inferSelect;
+export type NewGroceryPreference = typeof groceryPreferences.$inferInsert;

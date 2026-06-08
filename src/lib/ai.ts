@@ -62,6 +62,7 @@ import {
 } from "./operator";
 import { gatherAbout } from "./answer";
 import { getLatestWeeklyReview, getOrGenerateWeeklyReview } from "./weekly-review";
+import { addGroceries, recategorizeGrocery, GROCERY_SECTIONS } from "./grocery";
 import { formatDate, startEndOfToday, todayStr, appTimeZone, parseOccurredAt } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
@@ -135,6 +136,8 @@ Tasks & reminders live in Todoist (the source of truth). create_task/complete_ta
 Ideas: when create_idea reports duplicateFound, don't duplicate — ask whether to add a note (add_idea_note) or make a new one (force=true).
 
 No duplicate tasks: when create_task reports duplicateFound, do NOT create another — tell her that one's already on the list and ask if she really wants a second (force=true only after she confirms). Never create the same task repeatedly.
+
+Groceries: when she's adding things to buy ("add milk and eggs", "we need paper towels", "put bananas on the list"), use add_grocery_items (one call, pass each item) — NOT create_task. It auto-files each item into the right store section. Confirm by section, briefly ("Added — Produce: bananas; Dairy: milk, eggs"). If she corrects a placement ("chips go in Pantry", "that's not produce"), use recategorize_grocery_item so it sticks next time.
 
 Email (Gmail): you can read her mail across all folders (search_emails uses Gmail search syntax — use "in:anywhere" to include all folders/spam/trash, plus operators like from:, subject:, is:unread, newer_than:7d, label:), open a specific message (read_email), and create drafts (create_email_draft). SENDING is different: NEVER call send_email without her explicit go-ahead in the conversation. Default to writing the draft and asking "Want me to send it?" — only send_email after she clearly says yes. Summarize, don't dump raw headers.
 
@@ -412,7 +415,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_task",
-    description: "Create a task in Todoist (the source of truth) and mirror it in Compass. Infer the role when obvious. The result may report duplicateFound (a similar open task already exists) — if so, do NOT create another; confirm with the user, and only pass force=true if they want it anyway.",
+    description: "Create a task in Todoist (the source of truth) and mirror it in Compass. Infer the role when obvious. The result may report duplicateFound (a similar open task already exists) — if so, do NOT create another; confirm with the user, and only pass force=true if they want it anyway. NOTE: for grocery/shopping items, use add_grocery_items instead — it auto-sorts them into store sections.",
     input_schema: {
       type: "object",
       properties: {
@@ -423,6 +426,29 @@ const TOOLS: Anthropic.Tool[] = [
         force: { type: "boolean", description: "Create even if a similar open task exists (only after the user confirms)." },
       },
       required: ["title"],
+    },
+  },
+  {
+    name: "add_grocery_items",
+    description: `Add one or more grocery/shopping items to the Grocery list in Todoist. Each item is automatically sorted into the right store section (${GROCERY_SECTIONS.join(", ")}) using a known-items dictionary, her learned preferences, then AI for anything unknown. Use this whenever she's adding things to buy ("add milk and eggs", "we need paper towels", "put bananas on the grocery list") — NOT create_task. Pass each distinct item separately.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        items: { type: "array", items: { type: "string" }, description: "Grocery items, e.g. ['milk','bananas','paper towels']." },
+      },
+      required: ["items"],
+    },
+  },
+  {
+    name: "recategorize_grocery_item",
+    description: "Move a grocery item to a different section AND remember that placement for next time. Use when she corrects a placement ('move chips to Pantry', 'eggs aren't dairy, put them in...', 'that goes in Household'). Future adds of that item will use the section she chose.",
+    input_schema: {
+      type: "object",
+      properties: {
+        item: { type: "string" },
+        section: { type: "string", enum: [...GROCERY_SECTIONS] },
+      },
+      required: ["item", "section"],
     },
   },
   {
@@ -908,6 +934,19 @@ async function runTool(
       conversationId,
     });
     return j({ ok: true, summary, taskId: task.id, needsRole: !role });
+  }
+
+  if (name === "add_grocery_items") {
+    const result = await addGroceries((input.items as string[]) ?? []);
+    if (!result.ok) return j(result);
+    // Group the placements by section for a clean confirmation.
+    const bySection: Record<string, string[]> = {};
+    for (const p of result.placed) (bySection[p.section] ??= []).push(p.item);
+    return j({ ok: true, bySection, skipped: result.skipped, usedAI: result.placed.filter((p) => p.via === "ai").map((p) => p.item) });
+  }
+
+  if (name === "recategorize_grocery_item") {
+    return j(await recategorizeGrocery(input.item as string, input.section as string));
   }
 
   if (name === "complete_task") {

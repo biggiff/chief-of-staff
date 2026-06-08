@@ -12,7 +12,7 @@ import {
   type Briefing,
   type AttentionType,
 } from "@/db";
-import { daysSince, todayStr, startEndOfToday, formatTime } from "./dates";
+import { daysSince, todayStr, startEndOfToday, formatTime, formatDate } from "./dates";
 import {
   attentionWeightsForRole,
   recencyFactor,
@@ -38,6 +38,7 @@ export type RoleScore = {
   reasons: ScoreReason[];
   openTaskCount: number;
   overdueHighPriorityCount: number;
+  overdueTasks: { title: string; due: string | null; priority: string }[];
   stalledProjectCount: number;
   latestHealthScore: number | null;
   daysSinceAttention: number | null;
@@ -135,12 +136,18 @@ export async function scoreRoles(): Promise<RoleScore[]> {
       .from(tasksTable)
       .where(and(eq(tasksTable.roleId, role.id), eq(tasksTable.status, "open")));
 
-    const now = Date.now();
+    // "Overdue" means past-due across a day boundary — a task due LATER TODAY is
+    // not overdue (this was a real false-signal source: a workout due at 10am
+    // counting as overdue at 2pm and inflating Health's concern). Use start-of-
+    // today, consistent with gatherAbout.
+    const { start: startOfToday } = startEndOfToday();
     let overdueHigh = 0;
     let maxAvoidance = 0;
     let topAvoidedTitle: string | null = null;
+    const overdueTasks: { title: string; due: string | null; priority: string }[] = [];
     for (const t of openTasks) {
-      const overdue = t.dueDate ? new Date(t.dueDate).getTime() < now : false;
+      const overdue = t.dueDate ? new Date(t.dueDate).getTime() < startOfToday.getTime() : false;
+      if (overdue) overdueTasks.push({ title: t.title, due: t.dueDate ? formatDate(t.dueDate) : null, priority: t.priority });
       if (t.priority === "high" && overdue) overdueHigh++;
       if (t.avoidanceCount > maxAvoidance) {
         maxAvoidance = t.avoidanceCount;
@@ -249,6 +256,7 @@ export async function scoreRoles(): Promise<RoleScore[]> {
       reasons,
       openTaskCount: openTasks.length,
       overdueHighPriorityCount: overdueHigh,
+      overdueTasks,
       stalledProjectCount: stalled,
       latestHealthScore: health,
       daysSinceAttention: attentionDays,

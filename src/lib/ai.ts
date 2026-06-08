@@ -54,6 +54,9 @@ import {
   listMemories,
   manageMemory,
   searchConversations,
+  getActiveWorkflow,
+  startWorkflow,
+  updateWorkflowState,
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
@@ -100,6 +103,8 @@ Behind the scenes you quietly maintain Compass (her roles, projects, tasks, atte
 
 EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers must come from Compass data, not from what you think you remember from the conversation. Before you answer ANY question that involves a date, a timeline, "when", "how long since", "last time", what happened/changed recently, activity history, a task's status (done? still open? due when?), an observation, a crossroad/decision and where it stands, attention history, or the state of any Compass entity — you MUST first call the relevant tool and answer from what it returns. The conversation is NOT a source of truth; it can be stale, partial, or about a different day. Concretely: chronology / "what changed / what did I do" → get_activity (or answer_about); "is X done / what's left / what's due" → get_todoist_tasks (or complete the relevant read); where a decision stands → get_crossroad; recent check-ins/dates → get_checkins; "how are things with X / what am I missing" → answer_about. Do NOT state a date, a count, a status, or a "you did/decided this on…" from memory — look it up. If a tool would tell you and you haven't called it, you don't actually know yet. When you're unsure or the data is thin, say "let me check" and check, or say plainly what you don't have — a quick "let me look" beats a confident wrong answer every time. Use the "Today is…" line below for the current date; never guess it.
 
+This applies to META / SYSTEM-PHRASED questions too — not just natural ones. Questions about what Compass contains or whether something is empty/blank MUST trigger a real query before you answer; never answer them from base context or assumption. Examples and routing: "is the crossroads system empty?" / "what crossroads exist?" → search_crossroads; "what do you know about Coach?" / "what did we store about Gifford & Co.?" → answer_about(that topic) (and get_memories if relevant); "what active projects exist?" / "what's in Compass?" → get_compass_overview. NEVER say a role, project, crossroad, or "the system" is empty/blank/unknown unless you JUST queried it and it genuinely came back empty. If a role or project has a description, mission, desired state, or outcome (these now appear in your context and in answer_about), use that content — do not call it blank.
+
 How you maintain things (confidence policy):
 - HIGH (she clearly states a fact or request): just do it, confirm in ONE short line. "spent an hour on PTO" → log_attention; "add idea: snack station" → create_idea; "finished the orthodontist call" → complete_task; "add task: order shirts" → create_task; "that's a Parent thing" → reassign.
 - MEDIUM (vague or ongoing, not a clear instruction): ask ONE quick question before writing.
@@ -139,6 +144,8 @@ OTHERWISE, when something seems to have lasting value but she didn't flag it, PR
 DO NOT promote: grocery items, one-off venting/frustration, casual brainstorming, or anything with no future value. If you're not sure it'll matter next month, don't store it (or make it temporary_context).
 REVISING: if she corrects a remembered fact or a pattern stops holding, use manage_memory (update the content/confidence, or archive it). Memory is revisable — keep it honest, not just growing. To recall, use get_memories; for older un-promoted discussion, search_conversations.
 
+GUIDED WORKFLOWS (process memory): for long, multi-step processes — above all RECALIBRATION (walking her roles/projects/decisions to refresh Compass) — do NOT track progress in your head or rely on the conversation; it won't survive a chat refresh. When she starts recalibration (or a similar structured process), call start_workflow(kind:"recalibration"), then as you go call update_workflow_state to record rolesCompleted / rolesRemaining / summariesPerRole / projectsIdentified / crossroadsIdentified / memoriesProposed / unresolvedQuestions, and set complete=true at the end. The active workflow is shown at the top of your context every turn — if one is in progress, RESUME from it (pick up the next remaining role; don't restart). IMPORTANT: when she recalibrates a role or project and gives real detail (history, structure, people, current state), persist it to the actual Compass fields — manage_role (description/mission/desiredState/warningSigns/maintenanceMinimum) and manage_project (description/desiredOutcome) — and promote durable facts/patterns to memory. Recalibration that only lives in chat is a failure; the point is to write it into Compass so it's there next time.
+
 Understanding her, not her vocabulary (this matters a lot): she will NEVER speak in Compass terms. She asks like a person — "what's going on with Mom?", "what am I avoiding?", "what keeps coming up?", "what's slipping?", "anything weird lately?", "what should I focus on?", "what changed this week?". Your job is to figure out what she's really asking and pull the right information yourself.
 - For these open-ended "how are things / what's going on / what am I missing" questions, call answer_about — it gathers across the right systems in one shot. Pass topic when she names a person/area ("Mom", "App Developer", "the bakery"); leave topic empty for broad questions about her whole life ("what am I avoiding?", "what's slipping?", "what should I focus on?"). For "anything I should pay attention to?" you can also lean on get_or_generate_briefing.
 - Rough map (you don't need to recite it, just route well): "going on with X" → answer_about(X). "avoiding / slipping / falling through cracks / missing" → answer_about() whole-life (overdue + avoided tasks + neglected roles + observations). "what keeps coming up / what do you keep noticing" → answer_about() (observations + crossroads). "what decisions am I stuck on" → search_crossroads. "what changed this week" → answer_about() / get_activity. When a question is genuinely ambiguous ("what's going on?"), default to the whole-life answer_about rather than asking her to clarify.
@@ -173,6 +180,20 @@ async function buildContext(): Promise<string> {
   // Ground every chronology answer in the real current date (her timezone).
   lines.push(`Today is ${formatDate(todayStr())} (timezone ${appTimeZone()}). Use this for any "today / this week / how long since" reasoning — do not guess the date.`);
   lines.push("");
+
+  // Active guided workflow (process memory) — survives chat refresh so a
+  // long-running flow like recalibration never loses its place.
+  try {
+    const wf = await getActiveWorkflow();
+    if (wf) {
+      lines.push(`ACTIVE WORKFLOW — you are mid-"${wf.kind}". This persists across chats; resume from here, do NOT restart or rely on conversation memory for it:`);
+      lines.push(`  state: ${JSON.stringify(wf.state)}`);
+      lines.push(`  (started ${formatDate(wf.startedAt)}; update it with update_workflow_state as you make progress.)`);
+      lines.push("");
+    }
+  } catch (err) {
+    console.error("workflow state load failed", err);
+  }
 
   // Working agreements — standing instructions about how Scout should operate.
   // Loaded every session; they take precedence in how you behave.
@@ -228,10 +249,35 @@ async function buildContext(): Promise<string> {
     if (s.daysSinceAttention != null) bits.push(`days_since_attention=${s.daysSinceAttention}`);
     if (s.maxAvoidanceCount >= 2) bits.push(`avoided="${s.topAvoidedTaskTitle}"x${s.maxAvoidanceCount}`);
     lines.push(`- ${s.role.name}: ${bits.join(", ")}`);
+    // Qualitative definition — so you actually KNOW each role, not just its counts.
+    // Never call a role "blank" when any of these are present.
+    if (s.role.description) lines.push(`    about: ${s.role.description}`);
+    if (s.role.mission) lines.push(`    mission: ${s.role.mission}`);
+    if (s.role.desiredState) lines.push(`    desired state: ${s.role.desiredState}`);
+    if (s.role.warningSigns) lines.push(`    warning signs: ${s.role.warningSigns}`);
+    if (s.role.maintenanceMinimum) lines.push(`    maintenance minimum: ${s.role.maintenanceMinimum}`);
     const hist = Array.isArray(s.role.changeHistory) ? (s.role.changeHistory as { from?: string; reason?: string }[]) : [];
     const lastRename = hist[hist.length - 1];
     if (lastRename?.from) {
       lines.push(`    (formerly "${lastRename.from}"${lastRename.reason ? ` — ${lastRename.reason}` : ""})`);
+    }
+  }
+
+  // Active projects with their qualitative fields (so you know what each IS).
+  const activeProjects = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.status, "active"));
+  if (activeProjects.length) {
+    const roleById = new Map(scored.map((s) => [s.role.id, s.role.name]));
+    lines.push("");
+    lines.push(`Active projects (${activeProjects.length}) — never call a project "blank" when it has a description:`);
+    for (const p of activeProjects) {
+      const role = p.roleId ? roleById.get(p.roleId) ?? "—" : "—";
+      lines.push(`- ${p.name} (role: ${role}, importance: ${p.strategicImportance})`);
+      if (p.description) lines.push(`    about: ${p.description}`);
+      if (p.desiredOutcome) lines.push(`    desired outcome: ${p.desiredOutcome}`);
+      if (p.lastMeaningfulProgressAt) lines.push(`    last progress: ${formatDate(p.lastMeaningfulProgressAt)}`);
     }
   }
 
@@ -403,7 +449,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "manage_role",
     description:
-      "Create, rename/update, or archive a role. update/archive identify the role by role_name; create uses name. You can change a role's name, importance (low/medium/high), or status (thriving/healthy/maintaining/needs_attention/critical).",
+      "Create, rename/update, or archive a role, AND write its qualitative definition. update/archive identify the role by role_name; create uses name. You can change name, importance (low/medium/high), status, and — important for recalibration — description, mission, desired_state, warning_signs, maintenance_minimum. Use these to PERSIST real detail she gives you about a role so it's there next time (don't leave it in chat only).",
     input_schema: {
       type: "object",
       properties: {
@@ -413,6 +459,11 @@ const TOOLS: Anthropic.Tool[] = [
         importance: { type: "string", enum: ["low", "medium", "high"] },
         status: { type: "string", enum: ["thriving", "healthy", "maintaining", "needs_attention", "critical"] },
         reason: { type: "string", description: "Why a significant change (esp. a rename) is being made — preserved as context. Always capture this on renames." },
+        description: { type: "string", description: "What this role actually is — context, history, people, current state." },
+        mission: { type: "string" },
+        desired_state: { type: "string" },
+        warning_signs: { type: "string" },
+        maintenance_minimum: { type: "string" },
       },
       required: ["action"],
     },
@@ -420,7 +471,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "manage_project",
     description:
-      "Create, update, or archive a project. update/archive identify it by project_name; create uses name. Can set the owning role (role_name) and status (active/paused/completed/archived).",
+      "Create, update, or archive a project, AND write its qualitative fields. update/archive identify it by project_name; create uses name. Can set owning role (role_name), status (active/paused/completed/archived), description, and desired_outcome. Use description/desired_outcome to PERSIST what a project actually is when she explains it — don't leave that detail in chat only.",
     input_schema: {
       type: "object",
       properties: {
@@ -429,6 +480,8 @@ const TOOLS: Anthropic.Tool[] = [
         name: { type: "string", description: "New name (create, or rename on update)." },
         role_name: { type: "string" },
         status: { type: "string", enum: ["active", "paused", "completed", "archived"] },
+        description: { type: "string", description: "What this project actually is — context and detail." },
+        desired_outcome: { type: "string" },
       },
       required: ["action"],
     },
@@ -576,6 +629,36 @@ const TOOLS: Anthropic.Tool[] = [
     name: "search_conversations",
     description: "Search the conversation archive (past messages — stored but not active memory). Use for 'when did we talk about…', 'what did I say about…', recovering past discussion not promoted to memory.",
     input_schema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] },
+  },
+  {
+    name: "get_workflow_state",
+    description: "Read the active guided-workflow state (process memory) — e.g. a recalibration in progress. Call this when resuming any long, multi-step process so you know exactly where you left off instead of guessing from the conversation. The active workflow is also shown at the top of your context.",
+    input_schema: { type: "object", properties: { kind: { type: "string" } } },
+  },
+  {
+    name: "start_workflow",
+    description: "Begin a guided multi-step workflow whose progress must survive a chat refresh (e.g. kind='recalibration'). If one is already active it resumes instead of duplicating. Use when she enters a structured process like recalibration.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", description: "e.g. 'recalibration'" },
+        state: { type: "object", description: "Optional initial state (rolesRemaining, etc.)." },
+      },
+      required: ["kind"],
+    },
+  },
+  {
+    name: "update_workflow_state",
+    description: "Save progress on the active workflow (merges into its state). Record things like rolesCompleted, rolesRemaining, summariesPerRole, projectsIdentified, crossroadsIdentified, memoriesProposed, unresolvedQuestions — as you go, not just at the end. Set complete=true when the whole process is done.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string" },
+        patch: { type: "object", description: "Fields to merge into the workflow state." },
+        complete: { type: "boolean" },
+      },
+      required: ["patch"],
+    },
   },
   {
     name: "undo_last",
@@ -824,6 +907,11 @@ async function runTool(
       importance: input.importance as string | undefined,
       status: input.status as string | undefined,
       reason: input.reason as string | undefined,
+      description: input.description as string | undefined,
+      mission: input.mission as string | undefined,
+      desiredState: input.desired_state as string | undefined,
+      warningSigns: input.warning_signs as string | undefined,
+      maintenanceMinimum: input.maintenance_minimum as string | undefined,
       conversationId,
     });
     return j(res);
@@ -836,6 +924,8 @@ async function runTool(
       name: input.name as string | undefined,
       roleName: input.role_name as string | undefined,
       status: input.status as string | undefined,
+      description: input.description as string | undefined,
+      desiredOutcome: input.desired_outcome as string | undefined,
       conversationId,
     });
     return j(res);
@@ -963,6 +1053,23 @@ async function runTool(
 
   if (name === "search_conversations") {
     return j({ ok: true, results: await searchConversations(input.query as string, (input.limit as number) ?? 12) });
+  }
+
+  if (name === "get_workflow_state") {
+    return j({ ok: true, workflow: await getActiveWorkflow(input.kind as string | undefined) });
+  }
+
+  if (name === "start_workflow") {
+    return j(await startWorkflow({ kind: input.kind as string, state: input.state as Record<string, unknown> | undefined, conversationId }));
+  }
+
+  if (name === "update_workflow_state") {
+    return j(await updateWorkflowState({
+      kind: input.kind as string | undefined,
+      patch: (input.patch as Record<string, unknown>) ?? {},
+      complete: input.complete as boolean | undefined,
+      conversationId,
+    }));
   }
 
   if (name === "undo_last") {

@@ -15,6 +15,7 @@ import {
   activityLog as activityTable,
   memories as memoriesTable,
   messages as messagesTable,
+  workflowStates as workflowStatesTable,
   type AttentionType,
   type Priority,
   type Role,
@@ -486,6 +487,11 @@ export async function manageRole(input: {
   importance?: string;
   status?: string;
   reason?: string; // why a significant change (esp. rename) is being made
+  description?: string;
+  mission?: string;
+  desiredState?: string;
+  warningSigns?: string;
+  maintenanceMinimum?: string;
   conversationId?: string | null;
 }) {
   const roles = await activeRoles();
@@ -498,6 +504,11 @@ export async function manageRole(input: {
         name: input.name,
         importanceLevel: (input.importance ?? "medium") as never,
         currentStatus: (input.status ?? "maintaining") as never,
+        description: input.description ?? null,
+        mission: input.mission ?? null,
+        desiredState: input.desiredState ?? null,
+        warningSigns: input.warningSigns ?? null,
+        maintenanceMinimum: input.maintenanceMinimum ?? null,
       })
       .returning();
     const summary = `Created role "${r.name}"`;
@@ -521,7 +532,17 @@ export async function manageRole(input: {
   const newHistory = isRename
     ? [...prevHistory, { from: role.name, to: input.name, reason: input.reason ?? null, at: new Date().toISOString() }]
     : prevHistory;
-  const prev = { name: role.name, importanceLevel: role.importanceLevel, currentStatus: role.currentStatus, changeHistory: role.changeHistory };
+  const prev = {
+    name: role.name,
+    importanceLevel: role.importanceLevel,
+    currentStatus: role.currentStatus,
+    changeHistory: role.changeHistory,
+    description: role.description,
+    mission: role.mission,
+    desiredState: role.desiredState,
+    warningSigns: role.warningSigns,
+    maintenanceMinimum: role.maintenanceMinimum,
+  };
   await db
     .update(rolesTable)
     .set({
@@ -529,12 +550,24 @@ export async function manageRole(input: {
       importanceLevel: (input.importance ?? role.importanceLevel) as never,
       currentStatus: (input.status ?? role.currentStatus) as never,
       changeHistory: newHistory as never,
+      description: input.description ?? role.description,
+      mission: input.mission ?? role.mission,
+      desiredState: input.desiredState ?? role.desiredState,
+      warningSigns: input.warningSigns ?? role.warningSigns,
+      maintenanceMinimum: input.maintenanceMinimum ?? role.maintenanceMinimum,
       updatedAt: new Date(),
     })
     .where(eq(rolesTable.id, role.id));
+  const changedFields = [
+    input.description != null && "description",
+    input.mission != null && "mission",
+    input.desiredState != null && "desired state",
+    input.warningSigns != null && "warning signs",
+    input.maintenanceMinimum != null && "maintenance minimum",
+  ].filter(Boolean);
   const summary = isRename
     ? `Renamed role "${role.name}" → "${input.name}"${input.reason ? ` (${input.reason})` : ""}`
-    : `Updated role "${role.name}"`;
+    : `Updated role "${role.name}"${changedFields.length ? ` (${changedFields.join(", ")})` : ""}`;
   await logActivity({ actionKind: "role", summary, entityTable: "roles", entityId: role.id, undoPayload: { op: "update", id: role.id, prev }, conversationId: input.conversationId });
   return { ok: true, summary };
 }
@@ -545,6 +578,8 @@ export async function manageProject(input: {
   name?: string;
   roleName?: string;
   status?: string;
+  description?: string;
+  desiredOutcome?: string;
   conversationId?: string | null;
 }) {
   const roles = await activeRoles();
@@ -554,7 +589,7 @@ export async function manageProject(input: {
     if (!input.name) return { ok: false, summary: "Need a name to create a project." };
     const [p] = await db
       .insert(projectsTable)
-      .values({ name: input.name, roleId: role?.id ?? null, status: (input.status ?? "active") as never })
+      .values({ name: input.name, roleId: role?.id ?? null, status: (input.status ?? "active") as never, description: input.description ?? null, desiredOutcome: input.desiredOutcome ?? null })
       .returning();
     const summary = `Created project "${p.name}"${role ? ` under ${role.name}` : ""}`;
     await logActivity({ actionKind: "project", summary, entityTable: "projects", entityId: p.id, undoPayload: { op: "create", id: p.id }, conversationId: input.conversationId });
@@ -572,17 +607,20 @@ export async function manageProject(input: {
     return { ok: true, summary };
   }
 
-  const prev = { name: project.name, roleId: project.roleId, status: project.status };
+  const prev = { name: project.name, roleId: project.roleId, status: project.status, description: project.description, desiredOutcome: project.desiredOutcome };
   await db
     .update(projectsTable)
     .set({
       name: input.name ?? project.name,
       roleId: input.roleName ? role?.id ?? project.roleId : project.roleId,
       status: (input.status ?? project.status) as never,
+      description: input.description ?? project.description,
+      desiredOutcome: input.desiredOutcome ?? project.desiredOutcome,
       updatedAt: new Date(),
     })
     .where(eq(projectsTable.id, project.id));
-  const summary = `Updated project "${project.name}"`;
+  const changed = [input.description != null && "description", input.desiredOutcome != null && "desired outcome"].filter(Boolean);
+  const summary = `Updated project "${project.name}"${changed.length ? ` (${changed.join(", ")})` : ""}`;
   await logActivity({ actionKind: "project", summary, entityTable: "projects", entityId: project.id, undoPayload: { op: "update", id: project.id, prev }, conversationId: input.conversationId });
   return { ok: true, summary };
 }
@@ -1005,6 +1043,66 @@ export async function searchConversations(query: string, limit = 12) {
   }));
 }
 
+/* -------------------- Process memory / workflow state ------------------ */
+
+/**
+ * Long-running, multi-step processes (recalibration) must survive a chat
+ * refresh. State lives in the DB, not the conversation. `state` is a free-form
+ * progress object: rolesCompleted, rolesRemaining, summariesPerRole,
+ * projectsIdentified, crossroadsIdentified, memoriesProposed, unresolvedQuestions.
+ */
+export async function getActiveWorkflow(kind?: string) {
+  const rows = await db
+    .select()
+    .from(workflowStatesTable)
+    .where(eq(workflowStatesTable.status, "active"))
+    .orderBy(desc(workflowStatesTable.updatedAt));
+  const row = kind ? rows.find((r) => r.kind === kind) : rows[0];
+  if (!row) return null;
+  return { id: row.id, kind: row.kind, status: row.status, state: row.state as Record<string, unknown>, startedAt: row.startedAt.toISOString(), updatedAt: row.updatedAt.toISOString() };
+}
+
+export async function startWorkflow(input: { kind: string; state?: Record<string, unknown>; conversationId?: string | null }) {
+  // Resume an existing active run of the same kind rather than duplicating it.
+  const existing = await getActiveWorkflow(input.kind);
+  if (existing) return { ok: true, resumed: true, id: existing.id, state: existing.state };
+  const [row] = await db
+    .insert(workflowStatesTable)
+    .values({ kind: input.kind, status: "active", state: (input.state ?? {}) as never })
+    .returning();
+  await logActivity({
+    actionKind: "workflow_start",
+    summary: `Started a ${input.kind} workflow`,
+    entityTable: "workflow_states",
+    entityId: row.id,
+    undoPayload: { id: row.id },
+    conversationId: input.conversationId,
+  });
+  return { ok: true, resumed: false, id: row.id, state: row.state };
+}
+
+export async function updateWorkflowState(input: { kind?: string; id?: string; patch: Record<string, unknown>; complete?: boolean; conversationId?: string | null }) {
+  const current = input.id
+    ? (await db.select().from(workflowStatesTable).where(eq(workflowStatesTable.id, input.id)))[0]
+    : null;
+  const active = current ?? (input.kind ? await db.select().from(workflowStatesTable).where(eq(workflowStatesTable.status, "active")).orderBy(desc(workflowStatesTable.updatedAt)).then((r) => r.find((x) => x.kind === input.kind)) : (await db.select().from(workflowStatesTable).where(eq(workflowStatesTable.status, "active")).orderBy(desc(workflowStatesTable.updatedAt)))[0]);
+  if (!active) return { ok: false, message: "No active workflow to update — start one first." };
+
+  const merged = { ...(active.state as Record<string, unknown>), ...input.patch };
+  await db
+    .update(workflowStatesTable)
+    .set({ state: merged as never, status: input.complete ? "complete" : active.status, completedAt: input.complete ? new Date() : active.completedAt, updatedAt: new Date() })
+    .where(eq(workflowStatesTable.id, active.id));
+  await logActivity({
+    actionKind: "workflow_update",
+    summary: input.complete ? `Completed the ${active.kind} workflow` : `Updated ${active.kind} workflow progress`,
+    entityTable: "workflow_states",
+    entityId: active.id,
+    conversationId: input.conversationId,
+  });
+  return { ok: true, id: active.id, state: merged, status: input.complete ? "complete" : active.status };
+}
+
 export async function undoLast(): Promise<{ ok: boolean; message: string }> {
   const [last] = await db
     .select()
@@ -1080,8 +1178,8 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         if (p.op === "create") await db.delete(rolesTable).where(eq(rolesTable.id, id));
         else if (p.op === "archive") await db.update(rolesTable).set({ archivedAt: null }).where(eq(rolesTable.id, id));
         else if (p.op === "update") {
-          const prev = p.prev as { name: string; importanceLevel: string; currentStatus: string; changeHistory?: unknown };
-          await db.update(rolesTable).set({ name: prev.name, importanceLevel: prev.importanceLevel as never, currentStatus: prev.currentStatus as never, changeHistory: (prev.changeHistory ?? null) as never }).where(eq(rolesTable.id, id));
+          const prev = p.prev as { name: string; importanceLevel: string; currentStatus: string; changeHistory?: unknown; description?: string | null; mission?: string | null; desiredState?: string | null; warningSigns?: string | null; maintenanceMinimum?: string | null };
+          await db.update(rolesTable).set({ name: prev.name, importanceLevel: prev.importanceLevel as never, currentStatus: prev.currentStatus as never, changeHistory: (prev.changeHistory ?? null) as never, description: prev.description ?? null, mission: prev.mission ?? null, desiredState: prev.desiredState ?? null, warningSigns: prev.warningSigns ?? null, maintenanceMinimum: prev.maintenanceMinimum ?? null }).where(eq(rolesTable.id, id));
         }
         break;
       }
@@ -1092,8 +1190,8 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
           const prev = p.prev as { status: string };
           await db.update(projectsTable).set({ status: (prev?.status ?? "active") as never }).where(eq(projectsTable.id, id));
         } else if (p.op === "update") {
-          const prev = p.prev as { name: string; roleId: string | null; status: string };
-          await db.update(projectsTable).set({ name: prev.name, roleId: prev.roleId, status: prev.status as never }).where(eq(projectsTable.id, id));
+          const prev = p.prev as { name: string; roleId: string | null; status: string; description?: string | null; desiredOutcome?: string | null };
+          await db.update(projectsTable).set({ name: prev.name, roleId: prev.roleId, status: prev.status as never, description: prev.description ?? null, desiredOutcome: prev.desiredOutcome ?? null }).where(eq(projectsTable.id, id));
         }
         break;
       }
@@ -1114,6 +1212,9 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         break;
       case "memory_create":
         await db.delete(memoriesTable).where(eq(memoriesTable.id, p.id as string));
+        break;
+      case "workflow_start":
+        await db.delete(workflowStatesTable).where(eq(workflowStatesTable.id, p.id as string));
         break;
       case "memory_manage": {
         const prev = p.prev as { content: string; confidence: string | null; evidence: string | null; status: string };

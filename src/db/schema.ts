@@ -48,6 +48,7 @@ export type ProposedUpdateStatus = "pending" | "applied" | "rejected" | "dismiss
 export type InsightStatus = "open" | "surfaced" | "dismissed" | "resolved";
 export type MemoryType = "identity" | "learned_pattern" | "temporary_context";
 export type MemoryStatus = "active" | "archived" | "superseded";
+export type WorkflowStatus = "active" | "paused" | "complete";
 
 /* -------------------------------- Roles -------------------------------- */
 
@@ -349,6 +350,26 @@ export const memories = pgTable("memories", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* --------------------- Process memory / workflow state ----------------- */
+
+/**
+ * Guided-workflow state (Phase 3.7). Long-running, multi-step processes
+ * (recalibration above all) must NOT live in conversation memory — if the chat
+ * refreshes, Scout has to still know exactly where he left off. One row per
+ * workflow run; `state` holds the structured progress.
+ */
+export const workflowStates = pgTable("workflow_states", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: text("kind").notNull(), // e.g. "recalibration"
+  status: text("status").$type<WorkflowStatus>().notNull().default("active"), // active | paused | complete
+  // { rolesCompleted, rolesRemaining, summariesPerRole, projectsIdentified,
+  //   crossroadsIdentified, memoriesProposed, unresolvedQuestions, notes }
+  state: jsonb("state").notNull().default({}),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+});
+
 /* -------------------- Todoist project mapping layer -------------------- */
 
 export const todoistProjectLinks = pgTable("todoist_project_links", {
@@ -387,3 +408,5 @@ export type WorkingAgreement = typeof workingAgreements.$inferSelect;
 export type CrossroadDiscussion = typeof crossroadDiscussions.$inferSelect;
 export type Memory = typeof memories.$inferSelect;
 export type NewMemory = typeof memories.$inferInsert;
+export type WorkflowState = typeof workflowStates.$inferSelect;
+export type NewWorkflowState = typeof workflowStates.$inferInsert;

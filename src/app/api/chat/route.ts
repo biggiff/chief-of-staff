@@ -4,6 +4,10 @@ import { db, conversations, messages } from "@/db";
 import { generateChiefResponse } from "@/lib/chat-engine";
 
 export const dynamic = "force-dynamic";
+// A full turn (Opus + adaptive thinking + a multi-tool loop) can run well past the
+// default ~10s function limit; without this the function is killed mid-generation,
+// so no reply is ever produced or saved (the "thinking… then nothing" symptom).
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {

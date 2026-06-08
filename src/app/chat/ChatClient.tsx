@@ -98,10 +98,12 @@ export default function ChatClient({
   initialConversationId,
   initialMessages,
   glance,
+  fresh = false,
 }: {
   initialConversationId: string | null;
   initialMessages: Msg[];
   glance: Glance | null;
+  fresh?: boolean;
 }) {
   const [conversationId, setConversationId] = useState<string | null>(initialConversationId);
   const [messages, setMessages] = useState<Msg[]>(initialMessages);
@@ -251,6 +253,20 @@ export default function ChatClient({
           Drop image to attach
         </div>
       )}
+      <div className="flex items-center gap-2 border-b border-neutral-100 px-4 py-1.5">
+        {fresh && (
+          <span className="mr-auto rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+            Fresh test conversation · 0 prior messages · Compass + Memory only
+          </span>
+        )}
+        <a
+          href="/chat?new=1"
+          className={`text-xs font-medium text-neutral-500 hover:text-neutral-900 ${fresh ? "" : "ml-auto"}`}
+          title="Start a brand-new conversation with no prior chat history (Compass + Memory still load)"
+        >
+          ＋ New chat
+        </a>
+      </div>
       <div className="flex-1 overflow-y-auto px-4 py-5">
         <div className="mx-auto max-w-2xl space-y-4">
           {glance && <ScoutGlance glance={glance} />}

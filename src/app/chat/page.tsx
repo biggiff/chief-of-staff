@@ -5,12 +5,25 @@ import ChatClient from "./ChatClient";
 
 export const dynamic = "force-dynamic";
 
-export default async function ChatPage() {
-  const [conv] = await db
-    .select()
-    .from(conversations)
-    .orderBy(desc(conversations.updatedAt))
-    .limit(1);
+export default async function ChatPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // Dev/testing mode: /chat?new (or ?fresh) starts a brand-new conversation with
+  // ZERO prior messages — but Compass + Memory + Tools still load normally. This
+  // is how you verify Scout reconstructs your life from stored data alone, not
+  // from the persistent chat thread.
+  const sp = await searchParams;
+  const fresh = sp.new !== undefined || sp.fresh !== undefined;
+
+  const [conv] = fresh
+    ? [null]
+    : await db
+        .select()
+        .from(conversations)
+        .orderBy(desc(conversations.updatedAt))
+        .limit(1);
 
   let initialMessages: {
     id: string;
@@ -32,11 +45,15 @@ export default async function ChatPage() {
     }));
   }
 
+  // Skip the voiced glance in fresh mode — its opener can quote recent
+  // conversation, which would defeat a "stored data only" test.
   let glance: HomeGlance | null = null;
-  try {
-    glance = await getHomeGlance();
-  } catch (err) {
-    console.error("home glance failed", err);
+  if (!fresh) {
+    try {
+      glance = await getHomeGlance();
+    } catch (err) {
+      console.error("home glance failed", err);
+    }
   }
 
   return (
@@ -44,6 +61,7 @@ export default async function ChatPage() {
       initialConversationId={conv?.id ?? null}
       initialMessages={initialMessages}
       glance={glance}
+      fresh={fresh}
     />
   );
 }

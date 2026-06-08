@@ -725,7 +725,12 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "get_calendar_today",
-    description: "Fetch today's Google Calendar events (read-only).",
+    description: "Fetch today's events across ALL connected Google calendars (primary + subscribed/shared), read-only. Events from non-primary calendars are labeled with their calendar name.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_calendars",
+    description: "List every Google calendar connected to her account (primary + subscribed/shared). Use when she asks which calendars you can see, or to confirm a specific calendar is connected.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -1189,6 +1194,13 @@ async function runTool(
     if (!calendarEnabled()) return j({ ok: false, error: "Google Calendar not connected." });
     const events = await listTodaysEvents();
     return j({ ok: true, count: events.length, summary: formatEvents(events) });
+  }
+
+  if (name === "list_calendars") {
+    const { calendarEnabled, listCalendars } = await import("./integrations/google-calendar");
+    if (!calendarEnabled()) return j({ ok: false, error: "Google Calendar not connected." });
+    const cals = await listCalendars();
+    return j({ ok: true, count: cals.length, calendars: cals.map((c) => ({ name: c.name, primary: c.primary })) });
   }
 
   if (name === "list_email_labels") {

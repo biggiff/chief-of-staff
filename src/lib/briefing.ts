@@ -494,9 +494,10 @@ export async function getHomeGlance(): Promise<HomeGlance> {
   try {
     const { calendarEnabled, listTodaysEvents } = await import("./integrations/google-calendar");
     if (calendarEnabled()) {
-      events = (await listTodaysEvents()).map((e) =>
-        e.allDay ? e.title : `${formatTime(e.start)} ${e.title}`
-      );
+      events = (await listTodaysEvents()).map((e) => {
+        const label = e.isPrimary ? "" : ` (${e.calendar})`;
+        return (e.allDay ? e.title : `${formatTime(e.start)} ${e.title}`) + label;
+      });
     }
   } catch (err) {
     console.error("home glance calendar failed", err);

@@ -41,7 +41,16 @@ async function getAccessToken(): Promise<string> {
 
 import { appTimeZone, startEndOfToday, formatTime } from "../dates";
 
-export type CalEvent = { title: string; start: string; end: string | null; allDay: boolean };
+export type CalEvent = {
+  title: string;
+  start: string;
+  end: string | null;
+  allDay: boolean;
+  calendar: string; // which calendar it came from
+  isPrimary: boolean;
+};
+
+export type CalendarInfo = { id: string; name: string; primary: boolean };
 
 type GoogleEvent = {
   summary?: string;
@@ -49,27 +58,46 @@ type GoogleEvent = {
   end?: { dateTime?: string; date?: string };
 };
 
-/** Today's events from the primary calendar, in the user's timezone. */
-export async function listTodaysEvents(): Promise<CalEvent[]> {
+/** Every calendar on the connected account — primary plus subscribed/shared. */
+export async function listCalendars(): Promise<CalendarInfo[]> {
   if (!calendarEnabled()) return [];
   const token = await getAccessToken();
+  const cals: CalendarInfo[] = [];
+  let pageToken: string | undefined;
+  do {
+    const url = new URL(`${CAL_API}/users/me/calendarList`);
+    url.searchParams.set("minAccessRole", "reader"); // anything we can read
+    url.searchParams.set("showHidden", "true"); // include hidden subscribed calendars
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`Google calendarList ${res.status}: ${t.slice(0, 200)}`);
+    }
+    const j = (await res.json()) as {
+      items?: { id: string; summary?: string; summaryOverride?: string; primary?: boolean }[];
+      nextPageToken?: string;
+    };
+    for (const c of j.items ?? []) {
+      cals.push({ id: c.id, name: c.summaryOverride || c.summary || c.id, primary: !!c.primary });
+    }
+    pageToken = j.nextPageToken;
+  } while (pageToken);
+  return cals;
+}
 
-  const { start, end } = startEndOfToday();
-
-  const url = new URL(`${CAL_API}/calendars/primary/events`);
+async function fetchEventsForCalendar(token: string, cal: CalendarInfo, start: Date, end: Date): Promise<CalEvent[]> {
+  const url = new URL(`${CAL_API}/calendars/${encodeURIComponent(cal.id)}/events`);
   url.searchParams.set("timeMin", start.toISOString());
   url.searchParams.set("timeMax", end.toISOString());
   url.searchParams.set("timeZone", appTimeZone());
   url.searchParams.set("singleEvents", "true");
   url.searchParams.set("orderBy", "startTime");
-
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
   if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`Google Calendar ${res.status}: ${t.slice(0, 200)}`);
+    // Don't let one inaccessible calendar break the whole day — skip it.
+    console.error(`calendar "${cal.name}" events ${res.status}`);
+    return [];
   }
   const j = (await res.json()) as { items?: GoogleEvent[] };
   return (j.items ?? []).map((e) => ({
@@ -77,16 +105,34 @@ export async function listTodaysEvents(): Promise<CalEvent[]> {
     start: e.start?.dateTime || e.start?.date || "",
     end: e.end?.dateTime || e.end?.date || null,
     allDay: !e.start?.dateTime,
+    calendar: cal.name,
+    isPrimary: cal.primary,
   }));
 }
 
-/** One-line-per-event summary for the AI context / tool result. */
+/** Today's events across ALL connected calendars (primary + subscribed), merged. */
+export async function listTodaysEvents(): Promise<CalEvent[]> {
+  if (!calendarEnabled()) return [];
+  const token = await getAccessToken();
+  const cals = await listCalendars();
+  const targets = cals.length ? cals : [{ id: "primary", name: "Calendar", primary: true }];
+
+  const { start, end } = startEndOfToday();
+  const perCal = await Promise.all(targets.map((c) => fetchEventsForCalendar(token, c, start, end)));
+  const merged = perCal.flat();
+  merged.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  return merged;
+}
+
+/** One-line-per-event summary for the AI context / tool result. Non-primary
+ *  calendars are labeled so Scout can tell where each event lives. */
 export function formatEvents(events: CalEvent[]): string {
-  if (events.length === 0) return "No events on the calendar today.";
+  if (events.length === 0) return "No events on any calendar today.";
   return events
     .map((e) => {
-      if (e.allDay) return `- (all day) ${e.title}`;
-      return `- ${formatTime(e.start)} ${e.title}`;
+      const label = e.isPrimary ? "" : ` — [${e.calendar}]`;
+      if (e.allDay) return `- (all day) ${e.title}${label}`;
+      return `- ${formatTime(e.start)} ${e.title}${label}`;
     })
     .join("\n");
 }

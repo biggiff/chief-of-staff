@@ -1518,14 +1518,19 @@ export async function generateAIResponse(
   const forceCrossroads = DECISION_INTENT.test(userText);
 
   // Generous cap: cross-source synthesis can read many tools, then act + answer.
+  // forcedAnswer: once the model returns empty text (adaptive thinking ate the
+  // whole budget), retry the same turn with thinking disabled so it MUST produce
+  // a real answer instead of us saving a bare "…".
+  let forcedAnswer = false;
   for (let i = 0; i < 12; i++) {
     // Force the crossroads read on turn 0 for decision questions. tool_choice for a
     // specific tool requires thinking disabled, so we turn it off for just that call.
     const forcingNow = forceCrossroads && i === 0;
+    const thinkingOff = forcingNow || forcedAnswer;
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 2048,
-      thinking: forcingNow ? { type: "disabled" } : { type: "adaptive" },
+      max_tokens: 4096,
+      thinking: thinkingOff ? { type: "disabled" } : { type: "adaptive" },
       system: `${SYSTEM_PROMPT}\n\n${context}`,
       tools: TOOLS,
       ...(forcingNow ? { tool_choice: { type: "tool" as const, name: "search_crossroads" } } : {}),
@@ -1551,7 +1556,15 @@ export async function generateAIResponse(
       .map((b) => b.text)
       .join("\n")
       .trim();
-    return { content: text || "…", metadata: { engine: "ai", model: MODEL, toolsUsed } };
+    if (text) return { content: text, metadata: { engine: "ai", model: MODEL, toolsUsed } };
+
+    // Empty answer (e.g. stop_reason max_tokens during thinking). Retry once with
+    // thinking disabled to force real text; only give up if that also comes back empty.
+    if (!forcedAnswer) {
+      forcedAnswer = true;
+      continue;
+    }
+    break;
   }
 
   return {

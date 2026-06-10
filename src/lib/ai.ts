@@ -63,7 +63,8 @@ import {
 import { gatherAbout } from "./answer";
 import { getLatestWeeklyReview, getOrGenerateWeeklyReview } from "./weekly-review";
 import { addGroceries, recategorizeGrocery, looksLikeGrocery, GROCERY_SECTIONS } from "./grocery";
-import { formatDate, startEndOfToday, todayStr, appTimeZone, parseOccurredAt } from "./dates";
+import { smsEnabled, ownerPrimaryPhone, scheduleSms } from "./integrations/sms";
+import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
 /**
@@ -132,6 +133,8 @@ How you maintain things (confidence policy):
 Attention types: focused_work, progress (built/shipped something), planning, thinking, relationship, maintenance, rest. "worked on/built X" = progress or focused_work; "thought about X" = thinking; "date night / good talk" = relationship; "cleaned/laundry/errands" = maintenance.
 
 log_attention is ONLY for ACTUAL activities she did — every event counts toward role scoring and shows up in workout/attention history. Do NOT log narrative, summaries, recaps, or your own commentary as attention (e.g. "backfilled 9 workouts, ~2x/week" is a summary, NOT a Health activity). One real activity = one event with its real occurred_on date; for many past dates use occurred_dates. If you want to record a reflection or summary, just say it, or use an observation/memory — never a fake attention event, or you corrupt the scoring and history.
+
+Reminders vs tasks: when she asks to be REMINDED or texted AT a time ("remind me to call the dentist at 3pm", "text me at 5 to leave", "remind me tomorrow at 9"), use schedule_reminder — she gets the reminder as a TEXT from you at that moment (works 15 min to 7 days out; compute the time from today's date + her time). A plain to-do with no reminder time ("add a task to order shirts") is create_task. If she names a time that's <15 min or >7 days away, schedule_reminder will tell you — relay that and offer to add a task instead.
 
 Tasks & reminders live in Todoist (the source of truth). create_task/complete_task go through Todoist. You CAN set due dates AND times via due_string ("today at 3pm", "tomorrow morning", "Friday at 10am") — use it for timed reminders and confirm exactly what you scheduled (Todoist delivers it; don't promise a push beyond that). If a time/date is ambiguous, ask one short question. For complete_task, pass her wording; if the match is unclear, ask which one.
 
@@ -425,6 +428,19 @@ const TOOLS: Anthropic.Tool[] = [
         force: { type: "boolean", description: "Create even if a similar open task exists (only after the user confirms)." },
       },
       required: ["title"],
+    },
+  },
+  {
+    name: "schedule_reminder",
+    description:
+      "Schedule a TEXT reminder to Selena's phone at a specific time. Use whenever she asks to be reminded or texted at/by a time ('remind me to call the dentist at 3pm', 'text me at 5 to leave', 'remind me tomorrow at 9'). She gets the reminder as a text from you at that moment. Compute `at` from today's date (in your context) + the time she gave. Works 15 minutes to 7 days out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "What to remind her about (the reminder message)." },
+        at: { type: "string", description: "Local date-time as 'YYYY-MM-DDTHH:MM' (24-hour), computed from today + the time she said. If she gave no time, use a sensible one like 09:00." },
+      },
+      required: ["text", "at"],
     },
   },
   {
@@ -933,6 +949,25 @@ async function runTool(
       conversationId,
     });
     return j({ ok: true, summary, taskId: task.id, needsRole: !role });
+  }
+
+  if (name === "schedule_reminder") {
+    const when = parseLocalDateTime(input.at as string);
+    if (!when) return j({ ok: false, error: "Couldn't read that time — give me a clearer day/time." });
+    const to = ownerPrimaryPhone();
+    if (!smsEnabled() || !to) {
+      return j({ ok: false, error: "Text reminders aren't connected yet — I can add it as a task instead." });
+    }
+    const ms = when.getTime() - Date.now();
+    const human = `${formatDate(when)} at ${formatTime(when)}`;
+    if (ms < 16 * 60 * 1000) {
+      return j({ ok: false, tooSoon: true, error: `Texting can only be scheduled 15+ minutes out. ${human} is too close — want me to just text you closer to it, or add it as a task?` });
+    }
+    if (ms > 7 * 24 * 60 * 60 * 1000) {
+      return j({ ok: false, tooFar: true, error: `I can only schedule a text up to 7 days out. ${human} is further — I'll add it as a task and surface it as the day gets close.` });
+    }
+    const res = await scheduleSms(to, `Reminder: ${input.text}`, when);
+    return j(res.ok ? { ok: true, scheduledFor: human } : { ok: false, error: res.error });
   }
 
   if (name === "add_grocery_items") {
@@ -1517,13 +1552,13 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 }
 
 const LEAN_TOOL_NAMES = new Set([
-  "create_task", "complete_task", "create_idea", "add_idea_note", "log_attention",
+  "create_task", "schedule_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention",
   "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_todoist_tasks", "reassign",
 ]);
 
 const LEAN_SYSTEM = `${SCOUT_VOICE}
 
-This is a QUICK request. Handle it directly and confirm in ONE short line — no analysis, no commentary, no reflection. Grocery/shopping item → add_grocery_items. A task/reminder → create_task. "What's on my plate / today" → get_calendar_today + get_todoist_tasks, then a tight operational summary (appointments + what's due). Marking something done → complete_task. Logging time/effort → log_attention. Keep it short and operational. If it genuinely needs deeper thinking, answer briefly with what you can.`;
+This is a QUICK request. Handle it directly and confirm in ONE short line — no analysis, no commentary, no reflection. Grocery/shopping item → add_grocery_items. A REMINDER with a time ("remind me to X at 3pm", "text me at 5") → schedule_reminder (she gets a text at that time). A plain task/to-do with no reminder time → create_task. "What's on my plate / today" → get_calendar_today + get_todoist_tasks, then a tight operational summary (appointments + what's due). Marking something done → complete_task. Logging time/effort → log_attention. Keep it short and operational. If it genuinely needs deeper thinking, answer briefly with what you can.`;
 
 /** Lean model turn: minimal context, no thinking, small tool set. */
 async function leanGenerate(userText: string, history: HistoryMsg[], conversationId: string | null): Promise<ChiefResponse> {

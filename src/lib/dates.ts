@@ -35,6 +35,22 @@ function zonedWallToUtc(wall: string, tz: string): Date {
 }
 
 /**
+ * Parse a local wall-clock date-time (e.g. "2026-06-10T15:00") in the user's
+ * timezone into a UTC instant. Date-only defaults to 9am local. Used for
+ * scheduling reminders at the right real-world moment.
+ */
+export function parseLocalDateTime(input: string | null | undefined): Date | null {
+  if (!input) return null;
+  const s = input.trim();
+  const dt = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (dt) return zonedWallToUtc(`${dt[1]}T${dt[2]}:${dt[3]}:${dt[4] ?? "00"}`, appTimeZone());
+  const d = s.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (d) return zonedWallToUtc(`${d[1]}T09:00:00`, appTimeZone());
+  const fallback = new Date(s);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+/**
  * Parse a date the user/Scout gives for WHEN something happened into an instant.
  * Accepts "YYYY-MM-DD" (interpreted at noon in the user's tz to avoid day-shift)
  * or any Date-parseable string. Returns null if unparseable.

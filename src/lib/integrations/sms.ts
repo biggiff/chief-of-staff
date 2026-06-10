@@ -63,6 +63,35 @@ export async function sendSms(to: string, body: string): Promise<void> {
 }
 
 /**
+ * Schedule an SMS for a future time via Twilio (no cron needed). Twilio requires
+ * a Messaging Service and SendAt to be 15 min – 7 days out. Returns the message
+ * SID so it can be canceled later if needed.
+ */
+export async function scheduleSms(to: string, body: string, sendAt: Date): Promise<{ ok: boolean; sid?: string; error?: string }> {
+  if (!smsEnabled()) return { ok: false, error: "SMS not configured." };
+  const mss = process.env.TWILIO_MESSAGING_SERVICE_SID;
+  if (!mss) return { ok: false, error: "Scheduling needs a Messaging Service." };
+  const auth = Buffer.from(`${SID()}:${TOKEN()}`).toString("base64");
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${SID()}/Messages.json`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      To: to,
+      MessagingServiceSid: mss,
+      Body: body.slice(0, 1500),
+      ScheduleType: "fixed",
+      SendAt: sendAt.toISOString(),
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    return { ok: false, error: `Twilio schedule ${res.status}: ${t.slice(0, 160)}` };
+  }
+  const d = (await res.json()) as { sid?: string };
+  return { ok: true, sid: d.sid };
+}
+
+/**
  * Validate Twilio's X-Twilio-Signature so a stranger can't POST to our webhook
  * pretending to be Twilio (the allowlist checks the From field, which a raw POST
  * could forge — the signature can't be forged without our auth token).

@@ -99,9 +99,13 @@ export async function generateChiefResponse(
   conversationId: string | null = null,
   image?: { data: string; mediaType: string }
 ): Promise<ChiefResponse> {
-  const { aiEnabled, generateAIResponse } = await import("./ai");
+  const { aiEnabled, generateAIResponse, fastPath } = await import("./ai");
   if (aiEnabled()) {
     try {
+      // Usefulness per second: trivial/simple requests skip the heavy context +
+      // reasoning path. Returns null when the request needs the full treatment.
+      const fast = await fastPath(userText, history, conversationId, image);
+      if (fast) return fast;
       return await generateAIResponse(userText, history, conversationId, image);
     } catch (err) {
       console.error("AI layer failed, falling back to rules:", err);

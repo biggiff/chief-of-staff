@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import Anthropic from "@anthropic-ai/sdk";
 import { db, groceryPreferences as prefsTable } from "@/db";
+import { cached } from "./cache";
 import {
   ensureProjectWithSections,
   createTodoistTask,
@@ -81,6 +82,11 @@ export function normalizeKey(item: string): string {
     .trim();
 }
 
+/** Does this item resolve to a known grocery category? (for fast-path routing) */
+export function looksLikeGrocery(item: string): boolean {
+  return fromDictionary(normalizeKey(item)) !== null;
+}
+
 function fromDictionary(key: string): GrocerySection | null {
   // Prefer longer (more specific) keyword matches first.
   const keys = Object.keys(DICTIONARY).sort((a, b) => b.length - a.length);
@@ -135,7 +141,7 @@ export async function addGroceries(items: string[]): Promise<GroceryAddResult> {
   const clean = items.map((i) => i.trim()).filter(Boolean);
   if (!clean.length) return { ok: true, placed: [], skipped: [] };
 
-  const { projectId, sections } = await ensureProjectWithSections(PROJECT, [...GROCERY_SECTIONS]);
+  const { projectId, sections } = await cached("grocerySetup", 600_000, () => ensureProjectWithSections(PROJECT, [...GROCERY_SECTIONS]));
   const learned = await learnedMap();
 
   // Resolve each item's section: learned override → dictionary → (collect for AI).
@@ -186,7 +192,7 @@ export async function recategorizeGrocery(item: string, section: string): Promis
   if (!target) return { ok: false, message: `"${section}" isn't a grocery section. Use one of: ${GROCERY_SECTIONS.join(", ")}.` };
   if (!todoistEnabled()) return { ok: false, message: "Todoist not connected." };
 
-  const { projectId, sections } = await ensureProjectWithSections(PROJECT, [...GROCERY_SECTIONS]);
+  const { projectId, sections } = await cached("grocerySetup", 600_000, () => ensureProjectWithSections(PROJECT, [...GROCERY_SECTIONS]));
   const task = await findTaskInProject(projectId, item);
   if (task) await moveTodoistTask(task.id, sections[target]);
 

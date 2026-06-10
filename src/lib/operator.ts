@@ -57,6 +57,9 @@ async function logActivity(entry: {
     conversationId: entry.conversationId ?? null,
     source: entry.source ?? "chat",
   });
+  // Any write invalidates version-keyed caches (e.g. role scoring).
+  const { bumpDataVersion } = await import("./cache");
+  bumpDataVersion();
 }
 
 export async function activeRoles(): Promise<Role[]> {

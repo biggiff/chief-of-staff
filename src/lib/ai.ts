@@ -62,7 +62,7 @@ import {
 } from "./operator";
 import { gatherAbout } from "./answer";
 import { getLatestWeeklyReview, getOrGenerateWeeklyReview } from "./weekly-review";
-import { addGroceries, recategorizeGrocery, GROCERY_SECTIONS } from "./grocery";
+import { addGroceries, recategorizeGrocery, looksLikeGrocery, GROCERY_SECTIONS } from "./grocery";
 import { formatDate, startEndOfToday, todayStr, appTimeZone, parseOccurredAt } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
@@ -190,14 +190,9 @@ async function focusRoleName(focusRoleId: string | null | undefined, roles: Role
 
 /** Snapshot of current Compass state for Scout's system prompt. */
 async function buildContext(): Promise<string> {
-  // Keep the Todoist task mirror fresh (throttled — at most once per 10 min).
-  try {
-    const { syncTodoistIfStale } = await import("./integrations/todoist");
-    await syncTodoistIfStale();
-  } catch (err) {
-    console.error("stale-sync check failed", err);
-  }
-
+  // NOTE: the Todoist mirror refresh used to run here and block every reply by
+  // up to ~7s. It's now kicked off AFTER the response is sent (see the chat
+  // route's after() call) so it never sits on the critical path.
   const scored = await scoreRoles();
   const briefing = await getLatestBriefing();
 
@@ -354,7 +349,9 @@ async function buildContext(): Promise<string> {
   try {
     const { calendarEnabled, listTodaysEvents, formatEvents } = await import("./integrations/google-calendar");
     if (calendarEnabled()) {
-      const events = await listTodaysEvents();
+      // Cached ~2 min — today's events change slowly and this is a ~1.4s fetch.
+      const { cached } = await import("./cache");
+      const events = await cached("calendarToday", 120_000, () => listTodaysEvents());
       lines.push("");
       lines.push(`Today's calendar (${events.length}):`);
       lines.push(formatEvents(events));
@@ -1478,6 +1475,130 @@ export async function generateScoutBriefing(): Promise<string> {
 }
 
 export type HistoryMsg = { role: "user" | "chief_of_staff" | "system"; content: string };
+
+/* ----------------------------- Fast path ------------------------------- */
+// Usefulness per second: a request should only pay for the intelligence it
+// needs. Trivial ops resolve deterministically (no model); simple ops run a
+// lean model call (no heavy context, no thinking, small tools); everything that
+// might need real reasoning falls through to the full path unchanged.
+
+// Anything that smells like reflection / decisions / "what's going on" → full path.
+const FULL_TRIGGERS =
+  /\b(why|reflect|think through|figur(?:e|ing) out|feel|focus on|what'?s going on|catch me up|should i|pattern|avoid|how am i|my life|mandy|relationship|intimacy|health|overwhelm|wrestl|stuck|going back and forth|weekly review|help me)\b/i;
+
+/** Parse an explicit/known grocery add into items, or null if it isn't one. */
+function parseGroceryAdd(text: string): string[] | null {
+  const t = text.trim();
+  const m = t.match(/^(?:add|get|grab|buy|need|pick up|put)\s+(.+?)(?:\s+(?:to|on)\s+(?:the\s+)?(?:grocery|groceries|grocery list|shopping list|shopping|list))?[.!]?$/i);
+  if (!m) return null;
+  const items = m[1].split(/,|\band\b|&|\+/i).map((s) => s.trim()).filter(Boolean);
+  if (!items.length || items.length > 12) return null;
+  const explicit = /\b(grocery|groceries|shopping)\b/i.test(t);
+  if (explicit) return items;
+  // No "groceries" said: only treat as a grocery add if EVERY item is a known
+  // grocery item (so "add milk" works, but "add dentist appointment" doesn't).
+  return items.every((it) => looksLikeGrocery(it)) ? items : null;
+}
+
+function classifyFast(text: string): "grocery" | "lean" | "full" {
+  const t = text.trim();
+  if (t.length > 160 || DECISION_INTENT.test(t) || FULL_TRIGGERS.test(t)) return "full";
+  if (parseGroceryAdd(t)) return "grocery";
+  if (/^(add|remind|create|log|note|jot|mark|complete|finish|finished|done|put|schedule|set)\b/i.test(t)) return "lean";
+  if (/\bi (?:just )?(?:spent|did|finished|completed|worked on|knocked out)\b/i.test(t)) return "lean";
+  if (/(what'?s|what is|whats|what do i have)\b.*(today|on my plate|on my calendar|scheduled|due today|agenda|this morning|tonight)/i.test(t)) return "lean";
+  return "full";
+}
+
+const LEAN_TOOL_NAMES = new Set([
+  "create_task", "complete_task", "create_idea", "add_idea_note", "log_attention",
+  "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_todoist_tasks", "reassign",
+]);
+
+const LEAN_SYSTEM = `${SCOUT_VOICE}
+
+This is a QUICK request. Handle it directly and confirm in ONE short line — no analysis, no commentary, no reflection. Grocery/shopping item → add_grocery_items. A task/reminder → create_task. "What's on my plate / today" → get_calendar_today + get_todoist_tasks, then a tight operational summary (appointments + what's due). Marking something done → complete_task. Logging time/effort → log_attention. Keep it short and operational. If it genuinely needs deeper thinking, answer briefly with what you can.`;
+
+/** Lean model turn: minimal context, no thinking, small tool set. */
+async function leanGenerate(userText: string, history: HistoryMsg[], conversationId: string | null): Promise<ChiefResponse> {
+  const client = new Anthropic();
+  const tools = TOOLS.filter((t) => LEAN_TOOL_NAMES.has(t.name));
+  const priorTurns: Anthropic.MessageParam[] = history
+    .filter((m) => m.role === "user" || m.role === "chief_of_staff")
+    .slice(-4)
+    .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
+  const messages: Anthropic.MessageParam[] = [...priorTurns, { role: "user", content: userText }];
+  const toolsUsed: string[] = [];
+
+  for (let i = 0; i < 4; i++) {
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      thinking: { type: "disabled" },
+      system: `${LEAN_SYSTEM}\n\nToday is ${formatDate(todayStr())} (${appTimeZone()}).`,
+      tools,
+      messages,
+    });
+    if (response.stop_reason === "tool_use") {
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const block of response.content) {
+        if (block.type === "tool_use") {
+          toolsUsed.push(block.name);
+          const result = await runTool(block.name, block.input as Record<string, unknown>, conversationId);
+          toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
+        }
+      }
+      messages.push({ role: "assistant", content: response.content });
+      messages.push({ role: "user", content: toolResults });
+      continue;
+    }
+    const text = response.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
+    if (text) return { content: text, metadata: { engine: "ai-lean", model: MODEL, toolsUsed } };
+    break;
+  }
+  return { content: "Done.", metadata: { engine: "ai-lean", model: MODEL, toolsUsed } };
+}
+
+/**
+ * Try to satisfy the request cheaply. Returns null to fall through to the full
+ * reasoning path. Images and anything reflection-/decision-shaped go full.
+ */
+export async function fastPath(
+  userText: string,
+  history: HistoryMsg[],
+  conversationId: string | null,
+  image?: { data: string; mediaType: string }
+): Promise<ChiefResponse | null> {
+  if (image || !userText.trim()) return null;
+  const lane = classifyFast(userText);
+
+  if (lane === "grocery") {
+    const items = parseGroceryAdd(userText)!;
+    try {
+      const r = await addGroceries(items);
+      if (!r.ok) return null; // Todoist hiccup → let the full path try/explain
+      const bySection: Record<string, string[]> = {};
+      for (const p of r.placed) (bySection[p.section] ??= []).push(p.item);
+      const parts = Object.entries(bySection).map(([sec, its]) => `${its.join(", ")} (${sec})`);
+      let msg =
+        parts.length ? `Added to your Grocery list — ${parts.join("; ")}.` : "";
+      if (r.skipped.length) msg += `${msg ? " " : ""}Already on the list: ${r.skipped.join(", ")}.`;
+      return { content: msg || "Nothing to add.", metadata: { engine: "fast-grocery", placed: r.placed.length, skipped: r.skipped.length } };
+    } catch {
+      return null;
+    }
+  }
+
+  if (lane === "lean") {
+    try {
+      return await leanGenerate(userText, history, conversationId);
+    } catch {
+      return null; // any trouble → fall through to the robust full path
+    }
+  }
+
+  return null;
+}
 
 export async function generateAIResponse(
   userText: string,

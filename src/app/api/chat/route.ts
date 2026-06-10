@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
 import { generateChiefResponse } from "@/lib/chat-engine";
@@ -71,6 +72,17 @@ export async function POST(req: NextRequest) {
         metadataJson: reply.metadata,
       })
       .returning();
+
+    // Refresh the Todoist mirror AFTER the reply is sent — never on the critical
+    // path (this used to add up to ~7s to a turn). Throttled internally to 10 min.
+    after(async () => {
+      try {
+        const { syncTodoistIfStale } = await import("@/lib/integrations/todoist");
+        await syncTodoistIfStale();
+      } catch (err) {
+        console.error("post-response todoist sync failed", err);
+      }
+    });
 
     return NextResponse.json({
       conversationId,

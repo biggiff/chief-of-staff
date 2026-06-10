@@ -62,8 +62,19 @@ const STATUS_WEIGHT: Record<string, number> = {
   thriving: -2,
 };
 
-/** Score every active role and sort most-in-need-of-attention first. */
+/**
+ * Score every active role — CACHED. The heavy computation (computeRoleScores)
+ * ran on every chat turn (~2.4s of per-role task/project queries). It's now
+ * memoized on the data version + a short TTL, so back-to-back turns reuse it and
+ * any Compass write invalidates it.
+ */
 export async function scoreRoles(): Promise<RoleScore[]> {
+  const { cached } = await import("./cache");
+  return cached("scoreRoles", 30_000, computeRoleScores);
+}
+
+/** Uncached scoring. Use scoreRoles() in hot paths. */
+export async function computeRoleScores(): Promise<RoleScore[]> {
   const activeRoles = await db
     .select()
     .from(rolesTable)

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, ne } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
 import { generateChiefResponse } from "@/lib/chat-engine";
 
@@ -98,10 +98,12 @@ export async function POST(req: NextRequest) {
 }
 
 // Load the most recent conversation's messages (used to hydrate the chat page).
+// Excludes the SMS thread — that's its own surface.
 export async function GET() {
   const [conv] = await db
     .select()
     .from(conversations)
+    .where(ne(conversations.title, "📱 Texts"))
     .orderBy(desc(conversations.updatedAt))
     .limit(1);
 

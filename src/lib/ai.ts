@@ -1500,6 +1500,12 @@ function parseGroceryAdd(text: string): string[] | null {
   return items.every((it) => looksLikeGrocery(it)) ? items : null;
 }
 
+/** True when a request is capture/light (fast) rather than deep reasoning. Used by
+ *  the SMS bridge to decide whether to send an "on it…" ack first. */
+export function isQuickRequest(text: string): boolean {
+  return classifyFast(text) !== "full";
+}
+
 function classifyFast(text: string): "grocery" | "lean" | "full" {
   const t = text.trim();
   if (t.length > 160 || DECISION_INTENT.test(t) || FULL_TRIGGERS.test(t)) return "full";

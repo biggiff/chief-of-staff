@@ -1,7 +1,10 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, ne } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
 import { getHomeGlance, type HomeGlance } from "@/lib/briefing";
 import ChatClient from "./ChatClient";
+
+// The SMS thread is its own surface — don't surface it in the web chat.
+const SMS_TITLE = "📱 Texts";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +25,7 @@ export default async function ChatPage({
     : await db
         .select()
         .from(conversations)
+        .where(ne(conversations.title, SMS_TITLE))
         .orderBy(desc(conversations.updatedAt))
         .limit(1);
 

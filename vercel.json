@@ -3,6 +3,10 @@
     {
       "path": "/api/weekly/generate",
       "schedule": "0 1 * * 1"
+    },
+    {
+      "path": "/api/sms/morning",
+      "schedule": "0 14 * * *"
     }
   ]
 }

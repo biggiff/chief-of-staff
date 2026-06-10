@@ -16,6 +16,17 @@ async function run(req: NextRequest) {
   }
   try {
     const review = await generateWeeklyReview();
+    // Nudge over SMS if configured — a short text, the full review lives in the app.
+    try {
+      const { smsEnabled, ownerPrimaryPhone, sendSms } = await import("@/lib/integrations/sms");
+      const to = ownerPrimaryPhone();
+      if (smsEnabled() && to) {
+        const tl = review.throughline ? ` ${review.throughline}` : "";
+        await sendSms(to, `🗓️ Your weekly review's ready.${tl} Open the app for the full read, or text me "weekly review" for the rundown.`);
+      }
+    } catch (err) {
+      console.error("weekly sms nudge failed", err);
+    }
     return NextResponse.json({ ok: true, weekOf: review.weekOf, id: review.id });
   } catch (err) {
     console.error("weekly generate failed", err);

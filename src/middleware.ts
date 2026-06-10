@@ -15,6 +15,7 @@ export async function middleware(req: NextRequest) {
     pathname === "/login" ||
     pathname === "/api/login" ||
     pathname === "/manifest.webmanifest" ||
+    pathname === "/privacy" ||           // public — carriers must crawl it for A2P
     pathname === "/api/weekly/generate" ||
     pathname === "/api/sms" ||           // Twilio webhook — auth'd by signature + allowlist
     pathname === "/api/sms/morning"      // cron — auth'd by CRON_SECRET

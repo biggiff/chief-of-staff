@@ -42,14 +42,19 @@ export function ownerPrimaryPhone(): string | null {
   return ownerPhones()[0] ?? null;
 }
 
-/** Send an SMS via the Twilio REST API (basic auth, no SDK needed). */
+/** Send an SMS via the Twilio REST API (basic auth, no SDK needed). Prefers the
+ *  A2P-registered Messaging Service when configured (better deliverability). */
 export async function sendSms(to: string, body: string): Promise<void> {
   if (!smsEnabled()) throw new Error("SMS not configured.");
   const auth = Buffer.from(`${SID()}:${TOKEN()}`).toString("base64");
+  const params: Record<string, string> = { To: to, Body: body.slice(0, 1500) };
+  const mss = process.env.TWILIO_MESSAGING_SERVICE_SID;
+  if (mss) params.MessagingServiceSid = mss;
+  else params.From = FROM()!;
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${SID()}/Messages.json`, {
     method: "POST",
     headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ To: to, From: FROM()!, Body: body.slice(0, 1500) }),
+    body: new URLSearchParams(params),
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");

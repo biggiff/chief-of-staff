@@ -7,6 +7,10 @@ export const metadata: Metadata = {
   title: "Scout",
   description: "Scout — your Chief of Staff.",
   applicationName: "Scout",
+  // Private personal app — keep it out of all search engines (incl. the
+  // scout.cookiedoughrk.com subdomain). Does NOT affect A2P verification, since
+  // the carrier reviewer visits the URL directly rather than via search.
+  robots: { index: false, follow: false },
   manifest: "/manifest.webmanifest",
   // Launch full-screen (no Safari chrome) when added to the iOS Home Screen.
   appleWebApp: {

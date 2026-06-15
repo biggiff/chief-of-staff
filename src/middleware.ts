@@ -14,6 +14,7 @@ export async function middleware(req: NextRequest) {
   if (
     pathname === "/login" ||
     pathname === "/api/login" ||
+    pathname === "/" ||                  // public landing page (verifiable website for A2P)
     pathname === "/manifest.webmanifest" ||
     pathname === "/privacy" ||           // public — carriers must crawl it for A2P
     pathname === "/api/weekly/generate" ||

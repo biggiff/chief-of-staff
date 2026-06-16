@@ -541,13 +541,8 @@ export async function getHomeGlance(): Promise<HomeGlance> {
   }
   if (!opener) opener = briefing.summary ?? "Let's figure out today.";
 
-  // Trigger the Observation Engine (throttled internally — most loads no-op fast).
-  try {
-    const { runObservationPass } = await import("./observation-engine");
-    await runObservationPass();
-  } catch (err) {
-    console.error("observation pass failed", err);
-  }
+  // Observation Engine no longer runs here (Pass 1 — intelligence is dormant by
+  // default). It's available on demand via the scan_for_observations tool.
 
   return { opener, note, tasksDue: due.length, events, focusRoleName };
 }

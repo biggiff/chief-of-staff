@@ -17,7 +17,6 @@ import {
 } from "@/db";
 import {
   scoreRoles,
-  getLatestBriefing,
   getOrCreateTodaysBriefing,
   generateBriefing,
   briefingToText,
@@ -67,7 +66,7 @@ import {
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
-import { getLatestWeeklyReview, getOrGenerateWeeklyReview } from "./weekly-review";
+import { getOrGenerateWeeklyReview } from "./weekly-review";
 import { addGroceries, recategorizeGrocery, looksLikeGrocery } from "./grocery";
 import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
@@ -206,33 +205,38 @@ async function focusRoleName(focusRoleId: string | null | undefined, roles: Role
   return roles.find((r) => r.id === focusRoleId)?.name ?? null;
 }
 
-/** Snapshot of current Compass state for Scout's system prompt. */
-async function buildContext(): Promise<string> {
-  // NOTE: the Todoist mirror refresh used to run here and block every reply by
-  // up to ~7s. It's now kicked off AFTER the response is sent (see the chat
-  // route's after() call) so it never sits on the critical path.
-  const scored = await scoreRoles();
-  const briefing = await getLatestBriefing();
+type Layer = "L1" | "L2" | "L3";
 
+/** Decide how deep a turn needs to go. L1 = capture/organize/retrieve (default,
+ *  lean). L2 = planning / project management. L3 = chief-of-staff / reflection /
+ *  pattern recognition. Intelligence engines stay dormant unless the layer (or an
+ *  explicit tool call) calls for them. */
+const L3_INTENT = /\b(why|reflect|think through|thinking through|figur(?:e|ing) out|how am i (?:doing|really)|what am i avoiding|avoidance|patterns?|noticing|notice about|what do you (?:notice|see)|going on with my life|chief of staff|fooling myself|wrestling|honestly|real talk)\b/i;
+const L2_INTENT = /\b(plan|planning|prioriti[sz]|organi[sz]e|strateg|this week|next week|week ahead|status|roadmap|focus on|what'?s slipping|what'?s falling|decisions?\b|crossroad|big picture|catch me up|review)\b/i;
+export function classifyLayer(text: string): Layer {
+  const t = text.trim();
+  if (L3_INTENT.test(t)) return "L3";
+  if (L2_INTENT.test(t)) return "L2";
+  return "L1";
+}
+
+/**
+ * Layered context for Scout's system prompt.
+ *
+ * Layer 1 (default) is LEAN: operating rules, identity, "right now" notes, folders
+ * (roles/projects as labels), open tasks, calendar. The intelligence engines —
+ * role scoring, observations, learned patterns, briefing judgment — are NOT run or
+ * loaded here. They stay fully queryable via tools, and L2/L3 turns are told they
+ * can pull them on demand.
+ */
+async function buildContext(layer: Layer = "L1"): Promise<string> {
+  // NOTE: the Todoist mirror refresh runs AFTER the response is sent (chat/telegram
+  // routes' after()) so it never sits on the critical path.
   const lines: string[] = [];
 
   // Ground every chronology answer in the real current date (her timezone).
   lines.push(`Today is ${formatDate(todayStr())} (timezone ${appTimeZone()}). Use this for any "today / this week / how long since" reasoning — do not guess the date.`);
   lines.push("");
-
-  // Proactive nudge: a fresh weekly review she hasn't opened yet.
-  try {
-    const wr = await getLatestWeeklyReview();
-    if (wr && !wr.openedAt) {
-      const ageDays = (Date.now() - new Date(wr.weekOf).getTime()) / (24 * 60 * 60 * 1000);
-      if (ageDays <= 3) {
-        lines.push(`NUDGE: Her weekly review (week of ${formatDate(wr.weekOf)}) is ready and she hasn't opened it. If it fits naturally, mention it's up — one line, don't force it. Throughline: ${wr.throughline ?? "—"}`);
-        lines.push("");
-      }
-    }
-  } catch (err) {
-    console.error("weekly nudge check failed", err);
-  }
 
   // Active guided workflow (process memory) — survives chat refresh so a
   // long-running flow like recalibration never loses its place.
@@ -273,7 +277,8 @@ async function buildContext(): Promise<string> {
       identity.forEach((m, i) => lines.push(`- [Identity #${i + 1}] ${m.content}`));
       lines.push("");
     }
-    if (patterns.length) {
+    // Learned patterns are intelligence — only surface them in deeper layers.
+    if (layer !== "L1" && patterns.length) {
       lines.push("LEARNED PATTERNS — tendencies you've observed (with confidence; revisable — don't treat as certainties, and update them if she pushes back):");
       patterns.forEach((m, i) => lines.push(`- [Learned Pattern #${i + 1}] [${m.confidence ?? "medium"}] ${m.content}${m.evidence ? ` (evidence: ${m.evidence})` : ""}`));
       lines.push("");
@@ -287,47 +292,57 @@ async function buildContext(): Promise<string> {
     console.error("memory load failed", err);
   }
 
-  lines.push("COMPASS STATE (computed by the rule-based engine):");
-  lines.push("");
-  lines.push("Roles, ranked by attention score (higher = needs attention more):");
-  for (const s of scored) {
-    const bits = [
-      `status=${s.role.currentStatus}`,
-      `importance=${s.role.importanceLevel}`,
-      `score=${s.score}`,
-      `open_tasks=${s.openTaskCount}`,
-    ];
-    if (s.overdueHighPriorityCount > 0) bits.push(`overdue_high=${s.overdueHighPriorityCount}`);
-    if (s.attentionCredit > 0) bits.push(`recent_attention_credit=${s.attentionCredit}`);
-    if (s.latestHealthScore != null) bits.push(`self_rated=${s.latestHealthScore}/10`);
-    if (s.daysSinceAttention != null) bits.push(`days_since_attention=${s.daysSinceAttention}`);
-    if (s.maxAvoidanceCount >= 2) bits.push(`avoided="${s.topAvoidedTaskTitle}"x${s.maxAvoidanceCount}`);
-    lines.push(`- ${s.role.name}: ${bits.join(", ")}`);
-    // Carry the evidence WITH the signal: never let "overdue_high=N" appear naked.
-    if (s.overdueTasks.length) {
-      lines.push(`    overdue items: ${s.overdueTasks.map((t) => `"${t.title}"${t.due ? ` (due ${t.due}, ${t.priority})` : ""}`).join("; ")}`);
+  if (layer === "L1") {
+    // LEAN: roles are just folders for organizing/answering — names + what they
+    // are. NO scoring, attention, avoidance, or "needs attention" ranking (that's
+    // the dormant intelligence; ask for a deeper read or it's a tool call away).
+    const roleRows = await db.select().from(rolesTable).where(isNull(rolesTable.archivedAt));
+    if (roleRows.length) {
+      lines.push("ROLES (your areas — folders for organizing and answering; for health/attention/what's-slipping, ask for a deeper read):");
+      for (const r of roleRows) lines.push(`- ${r.name}${r.description ? `: ${r.description}` : ""}`);
+      lines.push("");
     }
-    // Qualitative definition — so you actually KNOW each role, not just its counts.
-    // Never call a role "blank" when any of these are present.
-    if (s.role.description) lines.push(`    about: ${s.role.description}`);
-    if (s.role.mission) lines.push(`    mission: ${s.role.mission}`);
-    if (s.role.desiredState) lines.push(`    desired state: ${s.role.desiredState}`);
-    if (s.role.warningSigns) lines.push(`    warning signs: ${s.role.warningSigns}`);
-    if (s.role.maintenanceMinimum) lines.push(`    maintenance minimum: ${s.role.maintenanceMinimum}`);
-    const hist = Array.isArray(s.role.changeHistory) ? (s.role.changeHistory as { from?: string; reason?: string }[]) : [];
-    const lastRename = hist[hist.length - 1];
-    if (lastRename?.from) {
-      lines.push(`    (formerly "${lastRename.from}"${lastRename.reason ? ` — ${lastRename.reason}` : ""})`);
+  } else {
+    // L2/L3: bring in the scored, qualitative role health.
+    const scored = await scoreRoles();
+    lines.push("ROLES, ranked by attention score (higher = needs attention more):");
+    for (const s of scored) {
+      const bits = [
+        `status=${s.role.currentStatus}`,
+        `importance=${s.role.importanceLevel}`,
+        `score=${s.score}`,
+        `open_tasks=${s.openTaskCount}`,
+      ];
+      if (s.overdueHighPriorityCount > 0) bits.push(`overdue_high=${s.overdueHighPriorityCount}`);
+      if (s.attentionCredit > 0) bits.push(`recent_attention_credit=${s.attentionCredit}`);
+      if (s.latestHealthScore != null) bits.push(`self_rated=${s.latestHealthScore}/10`);
+      if (s.daysSinceAttention != null) bits.push(`days_since_attention=${s.daysSinceAttention}`);
+      if (s.maxAvoidanceCount >= 2) bits.push(`avoided="${s.topAvoidedTaskTitle}"x${s.maxAvoidanceCount}`);
+      lines.push(`- ${s.role.name}: ${bits.join(", ")}`);
+      if (s.overdueTasks.length) {
+        lines.push(`    overdue items: ${s.overdueTasks.map((t) => `"${t.title}"${t.due ? ` (due ${t.due}, ${t.priority})` : ""}`).join("; ")}`);
+      }
+      if (s.role.description) lines.push(`    about: ${s.role.description}`);
+      if (s.role.mission) lines.push(`    mission: ${s.role.mission}`);
+      if (s.role.desiredState) lines.push(`    desired state: ${s.role.desiredState}`);
+      if (s.role.warningSigns) lines.push(`    warning signs: ${s.role.warningSigns}`);
+      if (s.role.maintenanceMinimum) lines.push(`    maintenance minimum: ${s.role.maintenanceMinimum}`);
+      const hist = Array.isArray(s.role.changeHistory) ? (s.role.changeHistory as { from?: string; reason?: string }[]) : [];
+      const lastRename = hist[hist.length - 1];
+      if (lastRename?.from) {
+        lines.push(`    (formerly "${lastRename.from}"${lastRename.reason ? ` — ${lastRename.reason}` : ""})`);
+      }
     }
   }
 
-  // Active projects with their qualitative fields (so you know what each IS).
+  // Active projects — names + what each IS (folders for organizing). Always; light.
   const activeProjects = await db
     .select()
     .from(projectsTable)
     .where(eq(projectsTable.status, "active"));
   if (activeProjects.length) {
-    const roleById = new Map(scored.map((s) => [s.role.id, s.role.name]));
+    const roleRows2 = await db.select().from(rolesTable);
+    const roleById = new Map(roleRows2.map((r) => [r.id, r.name]));
     lines.push("");
     lines.push(`Active projects (${activeProjects.length}) — never call a project "blank" when it has a description:`);
     for (const p of activeProjects) {
@@ -379,10 +394,14 @@ async function buildContext(): Promise<string> {
     console.error("calendar context failed:", err);
   }
 
-  if (briefing) {
+  // Deeper layers: the intelligence isn't preloaded (it's dormant) — tell Scout it
+  // can pull it on demand for this kind of request.
+  if (layer === "L2") {
     lines.push("");
-    lines.push(`Latest briefing (${formatDate(briefing.briefingDate)}): ${briefing.summary ?? ""}`);
-    if (briefing.whyThis) lines.push(`  why: ${briefing.whyThis.replace(/\n/g, " | ")}`);
+    lines.push("(This reads like a planning / project request. Pull live status as needed: get_compass_overview, get_todoist_tasks, search_crossroads, answer_about. Don't dump metrics — synthesize.)");
+  } else if (layer === "L3") {
+    lines.push("");
+    lines.push("(This reads like a chief-of-staff / reflection request. You may pull deeper signals: answer_about, scan_for_observations, get_observations, get_memories, get_attention_history, search_crossroads, get_or_generate_briefing. Lead with judgment, not data.)");
   }
 
   // Proof Mode (temporary, toggleable) — make every factual claim cite its source.
@@ -1702,7 +1721,9 @@ export async function generateAIResponse(
   image?: { data: string; mediaType: string }
 ): Promise<ChiefResponse> {
   const client = new Anthropic();
-  const context = await buildContext();
+  // Layer classifier: L1 (default) is lean; L2/L3 invite the dormant intelligence.
+  const layer = classifyLayer(userText);
+  const context = await buildContext(layer);
 
   const priorTurns: Anthropic.MessageParam[] = history
     .filter((m) => m.role === "user" || m.role === "chief_of_staff")

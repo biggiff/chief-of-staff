@@ -18,6 +18,17 @@ export function calendarEnabled(): boolean {
   return googleConfigured() && !!process.env.GOOGLE_REFRESH_TOKEN;
 }
 
+/** Health probe: can we still exchange the refresh token? false = needs reconnecting. */
+export async function calendarAuthOk(): Promise<boolean> {
+  if (!calendarEnabled()) return true; // not configured ≠ broken
+  try {
+    await getAccessToken();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function getAccessToken(): Promise<string> {
   const body = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,

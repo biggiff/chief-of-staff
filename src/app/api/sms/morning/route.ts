@@ -51,6 +51,27 @@ async function run(req: NextRequest) {
   parts.push("Text me to add or knock anything out.");
 
   const res = await notifyOwner(parts.join(" "));
+
+  // Google-token health check — alert ONCE per outage (not every morning), and
+  // confirm once when it recovers. Turns a silent calendar failure into a nudge.
+  try {
+    const { calendarEnabled, calendarAuthOk } = await import("@/lib/integrations/google-calendar");
+    const { getSetting, setSetting } = await import("@/lib/operator");
+    if (calendarEnabled()) {
+      const ok = await calendarAuthOk();
+      const alerted = (await getSetting("cal_auth_alerted")) === "yes";
+      if (!ok && !alerted) {
+        await notifyOwner("⚠️ Heads up — Google needs reconnecting. Your calendar isn't reading right now, so your brief is missing events. Reply here when you're ready and I'll walk you through the 2-minute reconnect.");
+        await setSetting("cal_auth_alerted", "yes");
+      } else if (ok && alerted) {
+        await setSetting("cal_auth_alerted", "no");
+        await notifyOwner("✅ Google calendar's reconnected — back to normal.");
+      }
+    }
+  } catch (err) {
+    console.error("calendar health check failed", err);
+  }
+
   return NextResponse.json(res, { status: res.ok ? 200 : 500 });
 }
 

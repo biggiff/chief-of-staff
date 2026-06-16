@@ -136,6 +136,40 @@ async function findOrCreateSection(token: string, projectId: string, name: strin
 }
 
 /**
+ * Resolve an EXISTING project by id or name and return its real sections — no
+ * creation. Used so groceries write into the user's own list with the user's own
+ * sections, rather than a parallel project Scout made up.
+ */
+export async function resolveProjectAndSections(
+  idOrName: string
+): Promise<{ projectId: string; name: string; sectionsByName: Record<string, string>; sectionNames: string[] } | null> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const projects = await paginate<TodoistProject>(token, "projects");
+  const proj =
+    projects.find((p) => p.id === idOrName) ||
+    projects.find((p) => p.name.toLowerCase() === idOrName.toLowerCase()) ||
+    projects.find((p) => p.name.toLowerCase().includes(idOrName.toLowerCase()));
+  if (!proj) return null;
+  const allSections = await paginate<TodoistSection>(token, "sections");
+  const mine = allSections.filter((s) => s.project_id === proj.id && !s.is_deleted);
+  const sectionsByName: Record<string, string> = {};
+  for (const s of mine) sectionsByName[s.name] = s.id;
+  return { projectId: proj.id, name: proj.name, sectionsByName, sectionNames: mine.map((s) => s.name) };
+}
+
+/** Delete a Todoist project (and its tasks). Used to remove the duplicate Scout made. */
+export async function deleteTodoistProject(projectId: string): Promise<void> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const res = await fetch(`${API}/projects/${projectId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 204) throw new Error(`Todoist project delete ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+}
+
+/**
  * Ensure a project exists with the given sections (creates what's missing).
  * Returns the project id and a name→sectionId map. Used for the Grocery setup.
  */

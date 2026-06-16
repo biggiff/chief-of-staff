@@ -68,7 +68,7 @@ import {
 } from "./operator";
 import { gatherAbout } from "./answer";
 import { getLatestWeeklyReview, getOrGenerateWeeklyReview } from "./weekly-review";
-import { addGroceries, recategorizeGrocery, looksLikeGrocery, GROCERY_SECTIONS } from "./grocery";
+import { addGroceries, recategorizeGrocery, looksLikeGrocery } from "./grocery";
 import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
@@ -455,23 +455,25 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "add_grocery_items",
-    description: `Add one or more grocery/shopping items to the Grocery list in Todoist. Each item is automatically sorted into the right store section (${GROCERY_SECTIONS.join(", ")}) using a known-items dictionary, her learned preferences, then AI for anything unknown. Use this whenever she's adding things to buy ("add milk and eggs", "we need paper towels", "put bananas on the grocery list") — NOT create_task. Pass each distinct item separately.`,
+    description: `Add one or more shopping items to her real Todoist lists. It writes to HER actual "Grocery List" (or "Costco List") and sorts each item into THAT list's existing sections (learned prefs → dictionary → AI). Use when she's adding things to buy ("add milk and eggs", "we need paper towels", "put bananas on the list") — NOT create_task. Set list="costco" when she says Costco ("add paper towels to the Costco list"); otherwise it defaults to the grocery list. Pass each distinct item separately.`,
     input_schema: {
       type: "object",
       properties: {
-        items: { type: "array", items: { type: "string" }, description: "Grocery items, e.g. ['milk','bananas','paper towels']." },
+        items: { type: "array", items: { type: "string" }, description: "Items, e.g. ['milk','bananas','paper towels']." },
+        list: { type: "string", enum: ["grocery", "costco"], description: "Which list. Default 'grocery'." },
       },
       required: ["items"],
     },
   },
   {
     name: "recategorize_grocery_item",
-    description: "Move a grocery item to a different section AND remember that placement for next time. Use when she corrects a placement ('move chips to Pantry', 'eggs aren't dairy, put them in...', 'that goes in Household'). Future adds of that item will use the section she chose.",
+    description: "Move an item to a different section in her list AND remember that placement next time. Use when she corrects a placement ('move chips to Snacks', 'eggs go in Dairy & Eggs'). Pass the section name as she says it — it's matched against her list's real sections. Set list='costco' for the Costco list.",
     input_schema: {
       type: "object",
       properties: {
         item: { type: "string" },
-        section: { type: "string", enum: [...GROCERY_SECTIONS] },
+        section: { type: "string", description: "Section name (matched against the list's real sections)." },
+        list: { type: "string", enum: ["grocery", "costco"], description: "Which list. Default 'grocery'." },
       },
       required: ["item", "section"],
     },
@@ -1014,16 +1016,17 @@ async function runTool(
   }
 
   if (name === "add_grocery_items") {
-    const result = await addGroceries((input.items as string[]) ?? []);
+    const list = (input.list as "grocery" | "costco") ?? "grocery";
+    const result = await addGroceries((input.items as string[]) ?? [], list);
     if (!result.ok) return j(result);
     // Group the placements by section for a clean confirmation.
     const bySection: Record<string, string[]> = {};
-    for (const p of result.placed) (bySection[p.section] ??= []).push(p.item);
-    return j({ ok: true, bySection, skipped: result.skipped, usedAI: result.placed.filter((p) => p.via === "ai").map((p) => p.item) });
+    for (const p of result.placed) (bySection[p.section ?? "(no section)"] ??= []).push(p.item);
+    return j({ ok: true, list: result.list, bySection, skipped: result.skipped, usedAI: result.placed.filter((p) => p.via === "ai").map((p) => p.item) });
   }
 
   if (name === "recategorize_grocery_item") {
-    return j(await recategorizeGrocery(input.item as string, input.section as string));
+    return j(await recategorizeGrocery(input.item as string, input.section as string, (input.list as "grocery" | "costco") ?? "grocery"));
   }
 
   if (name === "complete_task") {
@@ -1573,11 +1576,11 @@ const FULL_TRIGGERS =
 /** Parse an explicit/known grocery add into items, or null if it isn't one. */
 function parseGroceryAdd(text: string): string[] | null {
   const t = text.trim();
-  const m = t.match(/^(?:add|get|grab|buy|need|pick up|put)\s+(.+?)(?:\s+(?:to|on)\s+(?:the\s+)?(?:grocery|groceries|grocery list|shopping list|shopping|list))?[.!]?$/i);
+  const m = t.match(/^(?:add|get|grab|buy|need|pick up|put)\s+(.+?)(?:\s+(?:to|on)\s+(?:the\s+)?(?:grocery|groceries|grocery list|shopping list|shopping|costco|costco list|list))?[.!]?$/i);
   if (!m) return null;
   const items = m[1].split(/,|\band\b|&|\+/i).map((s) => s.trim()).filter(Boolean);
   if (!items.length || items.length > 12) return null;
-  const explicit = /\b(grocery|groceries|shopping)\b/i.test(t);
+  const explicit = /\b(grocery|groceries|shopping|costco)\b/i.test(t);
   if (explicit) return items;
   // No "groceries" said: only treat as a grocery add if EVERY item is a known
   // grocery item (so "add milk" works, but "add dentist appointment" doesn't).
@@ -1665,14 +1668,15 @@ export async function fastPath(
 
   if (lane === "grocery") {
     const items = parseGroceryAdd(userText)!;
+    const list = /\bcostco\b/i.test(userText) ? "costco" : "grocery";
     try {
-      const r = await addGroceries(items);
+      const r = await addGroceries(items, list);
       if (!r.ok) return null; // Todoist hiccup → let the full path try/explain
       const bySection: Record<string, string[]> = {};
-      for (const p of r.placed) (bySection[p.section] ??= []).push(p.item);
+      for (const p of r.placed) (bySection[p.section ?? "(no section)"] ??= []).push(p.item);
       const parts = Object.entries(bySection).map(([sec, its]) => `${its.join(", ")} (${sec})`);
       let msg =
-        parts.length ? `Added to your Grocery list — ${parts.join("; ")}.` : "";
+        parts.length ? `Added to your ${r.list ?? "list"} — ${parts.join("; ")}.` : "";
       if (r.skipped.length) msg += `${msg ? " " : ""}Already on the list: ${r.skipped.join(", ")}.`;
       return { content: msg || "Nothing to add.", metadata: { engine: "fast-grocery", placed: r.placed.length, skipped: r.skipped.length } };
     } catch {

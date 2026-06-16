@@ -64,22 +64,22 @@ export async function POST(req: NextRequest) {
       } else if (aiEnabled()) {
         // STREAM: send a placeholder, then live-edit it as the answer generates.
         const msgId = await sendTelegramMessage(chatId, "…").catch(() => null);
+        // Edits are SERIALIZED through a single chain (and throttled), so a stray
+        // mid-stream partial can never land after the final complete text.
+        let chain: Promise<void> = Promise.resolve();
         let last = 0;
-        let lastText = "";
         const reply = await generateAIResponse(text, history, conversationId, undefined, (acc) => {
-          lastText = acc;
           const now = Date.now();
-          // Throttle edits to ~1.3s apart to stay well under Telegram's rate limit.
           if (msgId && acc && now - last > 1300) {
             last = now;
-            void editTelegramMessage(chatId, msgId, acc);
+            chain = chain.then(() => editTelegramMessage(chatId, msgId, acc));
           }
         });
         await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
-        // Final state: make sure the message shows the complete answer.
-        if (msgId && reply.content && reply.content !== lastText) {
-          await editTelegramMessage(chatId, msgId, reply.content);
-        } else if (!msgId) {
+        if (msgId) {
+          await chain; // let any queued partial edits finish first
+          await editTelegramMessage(chatId, msgId, reply.content || "…"); // final wins
+        } else {
           await sendTelegram(chatId, reply.content);
         }
       } else {

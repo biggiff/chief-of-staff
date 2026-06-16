@@ -25,7 +25,7 @@ import { formatDate } from "./dates";
 const ENGINE_MARKER = "ObservationEngine"; // an integrations row tracks last-run time
 const THROTTLE_HOURS = 12;
 const MAX_NEW_PER_RUN = 2;
-const MODEL = process.env.COS_AI_MODEL || "claude-opus-4-8";
+const MODEL = process.env.COS_MODEL_MID || "claude-sonnet-4-6";
 
 function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();

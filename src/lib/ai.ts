@@ -85,7 +85,19 @@ export function aiEnabled(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
 }
 
-const MODEL = process.env.COS_AI_MODEL || "claude-opus-4-8";
+// Model tiering — use the lightest model that does the job. Daily volume (capture,
+// lean ops, L1) runs on Haiku; planning (L2) and reflection (L3) on Sonnet. Opus
+// is no longer the default; dial any tier up via env (e.g. COS_MODEL_DEEP=claude-opus-4-8).
+const MODEL_LIGHT = process.env.COS_MODEL_LIGHT || "claude-haiku-4-5";
+const MODEL_MID = process.env.COS_MODEL_MID || "claude-sonnet-4-6";
+const MODEL_DEEP = process.env.COS_MODEL_DEEP || "claude-sonnet-4-6";
+function modelForLayer(layer: Layer): string {
+  return layer === "L3" ? MODEL_DEEP : layer === "L2" ? MODEL_MID : MODEL_LIGHT;
+}
+/** Haiku doesn't support adaptive thinking; Sonnet/Opus do. */
+function supportsThinking(model: string): boolean {
+  return !/haiku/i.test(model);
+}
 
 // Decision/crossroads questions must hit the authoritative crossroads source, not
 // base context. This pattern triggers a deterministic crossroads query (see the
@@ -1451,7 +1463,7 @@ Keep each under ~180 characters. Today's picture:
 - Today's calendar: ${input.events.length ? input.events.join(", ") : "nothing scheduled"}`;
 
   const response = await client.messages.create({
-    model: MODEL,
+    model: MODEL_LIGHT,
     max_tokens: 500,
     thinking: { type: "disabled" }, // tiny rephrase — no thinking budget needed
     system: SCOUT_VOICE,
@@ -1571,7 +1583,7 @@ export async function generateScoutBriefing(): Promise<string> {
   }
 
   const response = await client.messages.create({
-    model: MODEL,
+    model: MODEL_DEEP,
     max_tokens: 900,
     thinking: { type: "disabled" },
     system: BRIEFING_SYSTEM,
@@ -1645,7 +1657,7 @@ async function leanGenerate(userText: string, history: HistoryMsg[], conversatio
 
   for (let i = 0; i < 4; i++) {
     const response = await client.messages.create({
-      model: MODEL,
+      model: MODEL_LIGHT,
       max_tokens: 1024,
       thinking: { type: "disabled" },
       system: `${LEAN_SYSTEM}\n\nToday is ${formatDate(todayStr())} (${appTimeZone()}).${proof}`,
@@ -1666,10 +1678,10 @@ async function leanGenerate(userText: string, history: HistoryMsg[], conversatio
       continue;
     }
     const text = response.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
-    if (text) return { content: text, metadata: { engine: "ai-lean", model: MODEL, toolsUsed } };
+    if (text) return { content: text, metadata: { engine: "ai-lean", model: MODEL_LIGHT, toolsUsed } };
     break;
   }
-  return { content: "Done.", metadata: { engine: "ai-lean", model: MODEL, toolsUsed } };
+  return { content: "Done.", metadata: { engine: "ai-lean", model: MODEL_LIGHT, toolsUsed } };
 }
 
 /**
@@ -1760,14 +1772,16 @@ export async function generateAIResponse(
   // forcedAnswer: once the model returns empty text (adaptive thinking ate the
   // whole budget), retry the same turn with thinking disabled so it MUST produce
   // a real answer instead of us saving a bare "…".
+  const model = modelForLayer(layer);
+  const canThink = supportsThinking(model);
   let forcedAnswer = false;
   for (let i = 0; i < 12; i++) {
     // Force the crossroads read on turn 0 for decision questions. tool_choice for a
     // specific tool requires thinking disabled, so we turn it off for just that call.
     const forcingNow = forceCrossroads && i === 0;
-    const thinkingOff = forcingNow || forcedAnswer;
+    const thinkingOff = forcingNow || forcedAnswer || !canThink;
     const response = await client.messages.create({
-      model: MODEL,
+      model,
       max_tokens: 4096,
       thinking: thinkingOff ? { type: "disabled" } : { type: "adaptive" },
       system: `${SYSTEM_PROMPT}\n\n${context}`,
@@ -1795,7 +1809,7 @@ export async function generateAIResponse(
       .map((b) => b.text)
       .join("\n")
       .trim();
-    if (text) return { content: text, metadata: { engine: "ai", model: MODEL, toolsUsed } };
+    if (text) return { content: text, metadata: { engine: "ai", model, toolsUsed, layer } };
 
     // Empty answer (e.g. stop_reason max_tokens during thinking). Retry once with
     // thinking disabled to force real text; only give up if that also comes back empty.
@@ -1808,6 +1822,6 @@ export async function generateAIResponse(
 
   return {
     content: "I worked through that but couldn't wrap it up cleanly — try rephrasing?",
-    metadata: { engine: "ai", model: MODEL, toolsUsed, exhausted: true },
+    metadata: { engine: "ai", model, toolsUsed, exhausted: true, layer },
   };
 }

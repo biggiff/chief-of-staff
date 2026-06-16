@@ -11,7 +11,7 @@ import {
   todoistEnabled,
 } from "./integrations/todoist";
 
-const MODEL = process.env.COS_AI_MODEL || "claude-opus-4-8";
+const MODEL = process.env.COS_MODEL_LIGHT || "claude-haiku-4-5";
 
 /**
  * Groceries write into the user's OWN Todoist lists (resolved by id from settings,

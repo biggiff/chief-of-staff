@@ -18,7 +18,7 @@ import {
 } from "@/db";
 import { todayStr, formatDate } from "./dates";
 
-const MODEL = process.env.COS_AI_MODEL || "claude-opus-4-8";
+const MODEL = process.env.COS_MODEL_DEEP || "claude-sonnet-4-6";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 

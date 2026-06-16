@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { dueReminders, markReminderSent } from "@/lib/operator";
+import { dueReminders, markReminderSent, rearmReminder } from "@/lib/operator";
 import { notifyOwner } from "@/lib/integrations/notify";
+import { nextOccurrence } from "@/lib/dates";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -21,7 +22,9 @@ async function run(req: NextRequest) {
   for (const r of due) {
     const res = await notifyOwner(`⏰ ${r.text}`);
     if (res.ok) {
-      await markReminderSent(r.id);
+      // Recurring → advance to the next occurrence; one-shot → mark sent.
+      if (r.recurrence) await rearmReminder(r.id, nextOccurrence(r.remindAt, r.recurrence));
+      else await markReminderSent(r.id);
       sent++;
     } else {
       console.error("reminder send failed", r.id, res.error);

@@ -500,12 +500,13 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "schedule_reminder",
     description:
-      "Schedule a one-shot timed nudge to TEXT her at a specific wall-clock time — for 'remind me at 3pm to call the dentist', 'text me tomorrow at 9 to take out the trash', 'ping me in 2 hours to…'. Scout (not Todoist) sends it to her via Telegram at that time. Compute the absolute local date+time from her phrasing and TODAY'S date (shown in your context), and pass it as `at` in 24-hour local time 'YYYY-MM-DDTHH:mm'. Confirm the exact time back to her in one line. (Use this for time-based nudges; use create_task for to-do items that live on a list.)",
+      "Schedule a timed nudge to TEXT her at a wall-clock time — 'remind me at 3pm to call the dentist', 'text me tomorrow at 9', 'ping me in 2 hours', AND recurring ones: 'every morning at 7', 'every weekday at 5pm', 'every Monday at 9', 'on the 1st of each month'. Scout sends it via Telegram. Compute the FIRST occurrence's absolute local date+time from her phrasing + TODAY'S date (in your context) and pass it as `at` ('YYYY-MM-DDTHH:mm', 24h, her timezone). For recurring, also set `repeat`: daily | weekdays (Mon–Fri) | weekly (same weekday as `at`) | monthly (same day-of-month as `at`). Confirm the time + cadence back in one line. (Time-based nudges only; use create_task for list items.)",
     input_schema: {
       type: "object",
       properties: {
         text: { type: "string", description: "What the reminder should say to her (e.g. 'Call the dentist')." },
-        at: { type: "string", description: "Absolute local time, 24h: 'YYYY-MM-DDTHH:mm' in her timezone." },
+        at: { type: "string", description: "First occurrence, absolute local time 24h: 'YYYY-MM-DDTHH:mm' in her timezone." },
+        repeat: { type: "string", enum: ["daily", "weekdays", "weekly", "monthly"], description: "Omit for one-shot. 'weekly' repeats on the same weekday as `at`; 'monthly' on the same day-of-month." },
       },
       required: ["text", "at"],
     },
@@ -945,8 +946,9 @@ async function runTool(
     const when = parseLocalDateTime(input.at as string);
     if (!when) return j({ ok: false, error: "Couldn't parse that time. Pass 'at' as 'YYYY-MM-DDTHH:mm' local." });
     if (when.getTime() < Date.now() - 60_000) return j({ ok: false, error: "That time is in the past — pick a future time." });
-    const { summary } = await createReminder({ text: input.text as string, remindAt: when, conversationId });
-    return j({ ok: true, summary, at: `${formatDate(when)} ${formatTime(when)}` });
+    const repeat = input.repeat as "daily" | "weekdays" | "weekly" | "monthly" | undefined;
+    const { summary } = await createReminder({ text: input.text as string, remindAt: when, recurrence: repeat ?? null, conversationId });
+    return j({ ok: true, summary, at: `${formatDate(when)} ${formatTime(when)}`, repeats: repeat ?? null });
   }
 
   if (name === "list_reminders") {

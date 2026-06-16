@@ -1157,12 +1157,18 @@ export async function updateWorkflowState(input: { kind?: string; id?: string; p
 
 /* ------------------------------ Reminders ------------------------------ */
 
-export async function createReminder(input: { text: string; remindAt: Date; conversationId?: string | null }) {
+export async function createReminder(input: {
+  text: string;
+  remindAt: Date;
+  recurrence?: "daily" | "weekdays" | "weekly" | "monthly" | null;
+  conversationId?: string | null;
+}) {
   const [row] = await db
     .insert(remindersTable)
-    .values({ text: input.text.slice(0, 1000), remindAt: input.remindAt, source: "chat" })
+    .values({ text: input.text.slice(0, 1000), remindAt: input.remindAt, recurrence: input.recurrence ?? null, source: "chat" })
     .returning();
-  const summary = `Set a reminder for ${formatDate(input.remindAt)} ${formatTime(input.remindAt)}: "${input.text.slice(0, 80)}"`;
+  const repeat = input.recurrence ? `, repeating ${input.recurrence}` : "";
+  const summary = `Set a reminder for ${formatDate(input.remindAt)} ${formatTime(input.remindAt)}${repeat}: "${input.text.slice(0, 80)}"`;
   await logActivity({
     actionKind: "reminder_create",
     summary,
@@ -1182,7 +1188,12 @@ export async function listReminders(limit = 20) {
     .where(eq(remindersTable.status, "pending"))
     .orderBy(remindersTable.remindAt)
     .limit(limit);
-  return rows.map((r) => ({ id: r.id, text: r.text, at: `${formatDate(r.remindAt)} ${formatTime(r.remindAt)}` }));
+  return rows.map((r) => ({ id: r.id, text: r.text, at: `${formatDate(r.remindAt)} ${formatTime(r.remindAt)}`, repeats: r.recurrence ?? null }));
+}
+
+/** After a recurring reminder fires, advance it to its next occurrence (stays pending). */
+export async function rearmReminder(id: string, nextAt: Date) {
+  await db.update(remindersTable).set({ remindAt: nextAt, sentAt: new Date() }).where(eq(remindersTable.id, id));
 }
 
 export async function cancelReminder(query: string, conversationId?: string | null) {

@@ -50,6 +50,7 @@ export type MemoryType = "identity" | "learned_pattern" | "temporary_context";
 export type MemoryStatus = "active" | "archived" | "superseded";
 export type WorkflowStatus = "active" | "paused" | "complete";
 export type ReminderStatus = "pending" | "sent" | "canceled";
+export type Recurrence = "daily" | "weekdays" | "weekly" | "monthly";
 
 /* -------------------------------- Roles -------------------------------- */
 
@@ -382,11 +383,14 @@ export const groceryPreferences = pgTable("grocery_preferences", {
 export const reminders = pgTable("reminders", {
   id: uuid("id").primaryKey().defaultRandom(),
   text: text("text").notNull(),
-  remindAt: timestamp("remind_at", { withTimezone: true }).notNull(),
+  remindAt: timestamp("remind_at", { withTimezone: true }).notNull(), // next fire time
+  // null = one-shot. Otherwise repeats: daily | weekdays | weekly | monthly.
+  // A recurring reminder stays "pending" and remindAt advances after each fire.
+  recurrence: text("recurrence").$type<Recurrence>(),
   status: text("status").$type<ReminderStatus>().notNull().default("pending"), // pending | sent | canceled
   source: text("source").notNull().default("chat"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  sentAt: timestamp("sent_at", { withTimezone: true }),
+  sentAt: timestamp("sent_at", { withTimezone: true }), // last time it fired
 });
 
 /* ------------------------- Weekly review ------------------------------- */

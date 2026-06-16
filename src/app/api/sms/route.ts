@@ -3,7 +3,6 @@ import { after } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
 import { generateChiefResponse } from "@/lib/chat-engine";
-import { isQuickRequest } from "@/lib/ai";
 import { smsEnabled, isAllowedSender, validateTwilioSignature, sendSms } from "@/lib/integrations/sms";
 
 export const dynamic = "force-dynamic";
@@ -58,12 +57,9 @@ export async function POST(req: NextRequest) {
   await db.insert(messages).values({ conversationId, role: "user", content: body });
 
   // Generate + send the reply AFTER the webhook returns, so slow turns never time
-  // out the webhook. Deep questions get an instant "on it" ack first.
+  // out the webhook.
   after(async () => {
     try {
-      if (!isQuickRequest(body)) {
-        await sendSms(from, "On it — give me a sec.").catch(() => {});
-      }
       const reply = await generateChiefResponse(body, history, conversationId);
       await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
       await sendSms(from, reply.content);

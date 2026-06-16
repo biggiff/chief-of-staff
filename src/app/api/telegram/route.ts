@@ -3,7 +3,6 @@ import { after } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
 import { generateChiefResponse } from "@/lib/chat-engine";
-import { isQuickRequest } from "@/lib/ai";
 import { telegramEnabled, isAllowedChat, webhookSecretOk, sendTelegram } from "@/lib/integrations/telegram";
 
 export const dynamic = "force-dynamic";
@@ -55,7 +54,6 @@ export async function POST(req: NextRequest) {
   // Generate + reply after the webhook returns (deep questions get an ack first).
   after(async () => {
     try {
-      if (!isQuickRequest(text)) await sendTelegram(chatId, "On it — one sec.").catch(() => {});
       const reply = await generateChiefResponse(text, history, conversationId);
       await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
       await sendTelegram(chatId, reply.content);

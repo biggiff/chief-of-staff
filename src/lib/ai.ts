@@ -66,7 +66,6 @@ import {
 import { gatherAbout } from "./answer";
 import { getLatestWeeklyReview, getOrGenerateWeeklyReview } from "./weekly-review";
 import { addGroceries, recategorizeGrocery, looksLikeGrocery, GROCERY_SECTIONS } from "./grocery";
-import { smsEnabled, ownerPrimaryPhone, scheduleSms } from "./integrations/sms";
 import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
@@ -431,19 +430,6 @@ const TOOLS: Anthropic.Tool[] = [
         force: { type: "boolean", description: "Create even if a similar open task exists (only after the user confirms)." },
       },
       required: ["title"],
-    },
-  },
-  {
-    name: "schedule_reminder",
-    description:
-      "Schedule a TEXT reminder to Selena's phone at a specific time. Use whenever she asks to be reminded or texted at/by a time ('remind me to call the dentist at 3pm', 'text me at 5 to leave', 'remind me tomorrow at 9'). She gets the reminder as a text from you at that moment. Compute `at` from today's date (in your context) + the time she gave. Works 15 minutes to 7 days out.",
-    input_schema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "What to remind her about (the reminder message)." },
-        at: { type: "string", description: "Local date-time as 'YYYY-MM-DDTHH:MM' (24-hour), computed from today + the time she said. If she gave no time, use a sensible one like 09:00." },
-      },
-      required: ["text", "at"],
     },
   },
   {
@@ -991,25 +977,6 @@ async function runTool(
       conversationId,
     });
     return j({ ok: true, summary, taskId: task.id, needsRole: !role });
-  }
-
-  if (name === "schedule_reminder") {
-    const when = parseLocalDateTime(input.at as string);
-    if (!when) return j({ ok: false, error: "Couldn't read that time — give me a clearer day/time." });
-    const to = ownerPrimaryPhone();
-    if (!smsEnabled() || !to) {
-      return j({ ok: false, error: "Text reminders aren't connected yet — I can add it as a task instead." });
-    }
-    const ms = when.getTime() - Date.now();
-    const human = `${formatDate(when)} at ${formatTime(when)}`;
-    if (ms < 16 * 60 * 1000) {
-      return j({ ok: false, tooSoon: true, error: `Texting can only be scheduled 15+ minutes out. ${human} is too close — want me to just text you closer to it, or add it as a task?` });
-    }
-    if (ms > 7 * 24 * 60 * 60 * 1000) {
-      return j({ ok: false, tooFar: true, error: `I can only schedule a text up to 7 days out. ${human} is further — I'll add it as a task and surface it as the day gets close.` });
-    }
-    const res = await scheduleSms(to, `Reminder: ${input.text}`, when);
-    return j(res.ok ? { ok: true, scheduledFor: human } : { ok: false, error: res.error });
   }
 
   if (name === "add_grocery_items") {

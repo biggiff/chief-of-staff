@@ -40,14 +40,36 @@ export function webhookSecretOk(header: string | null): boolean {
 }
 
 export async function sendTelegram(chatId: number | string, text: string): Promise<void> {
+  await sendTelegramMessage(chatId, text);
+}
+
+/** Send a message and return its message_id (for streaming edits). */
+export async function sendTelegramMessage(chatId: number | string, text: string): Promise<number | null> {
   if (!telegramEnabled()) throw new Error("Telegram not configured.");
   const res = await fetch(`https://api.telegram.org/bot${TOKEN()}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4000) }),
+    body: JSON.stringify({ chat_id: chatId, text: (text || "…").slice(0, 4000) }),
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");
     throw new Error(`Telegram send ${res.status}: ${t.slice(0, 200)}`);
+  }
+  const j = (await res.json()) as { result?: { message_id?: number } };
+  return j.result?.message_id ?? null;
+}
+
+/** Edit an existing message's text (for the streaming "typing-in" effect).
+ *  Best-effort: ignores 429s and "message not modified". */
+export async function editTelegramMessage(chatId: number | string, messageId: number, text: string): Promise<void> {
+  if (!telegramEnabled()) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TOKEN()}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text.slice(0, 4000) }),
+    });
+  } catch {
+    /* best-effort — a dropped edit just means the next one catches up */
   }
 }

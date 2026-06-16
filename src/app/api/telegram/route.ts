@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
+import { fastGrocery, generateAIResponse } from "@/lib/ai";
+import { aiEnabled } from "@/lib/ai";
 import { generateChiefResponse } from "@/lib/chat-engine";
-import { telegramEnabled, isAllowedChat, webhookSecretOk, sendTelegram } from "@/lib/integrations/telegram";
+import { telegramEnabled, isAllowedChat, webhookSecretOk, sendTelegram, sendTelegramMessage, editTelegramMessage } from "@/lib/integrations/telegram";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -51,14 +53,42 @@ export async function POST(req: NextRequest) {
   const history = prior.reverse().map((m) => ({ role: m.role, content: m.content }));
   await db.insert(messages).values({ conversationId, role: "user", content: text });
 
-  // Generate + reply after the webhook returns (deep questions get an ack first).
+  // Generate + reply after the webhook returns.
   after(async () => {
     try {
-      const reply = await generateChiefResponse(text, history, conversationId);
-      await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
-      await sendTelegram(chatId, reply.content);
-      // Keep the Todoist mirror fresh for the Telegram channel too (the web route
-      // already does this) so retrieval stays current. Throttled internally.
+      // Instant deterministic grocery adds — no model, no streaming needed.
+      const groc = aiEnabled() ? await fastGrocery(text) : null;
+      if (groc) {
+        await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: groc.content, metadataJson: groc.metadata });
+        await sendTelegram(chatId, groc.content);
+      } else if (aiEnabled()) {
+        // STREAM: send a placeholder, then live-edit it as the answer generates.
+        const msgId = await sendTelegramMessage(chatId, "…").catch(() => null);
+        let last = 0;
+        let lastText = "";
+        const reply = await generateAIResponse(text, history, conversationId, undefined, (acc) => {
+          lastText = acc;
+          const now = Date.now();
+          // Throttle edits to ~1.3s apart to stay well under Telegram's rate limit.
+          if (msgId && acc && now - last > 1300) {
+            last = now;
+            void editTelegramMessage(chatId, msgId, acc);
+          }
+        });
+        await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
+        // Final state: make sure the message shows the complete answer.
+        if (msgId && reply.content && reply.content !== lastText) {
+          await editTelegramMessage(chatId, msgId, reply.content);
+        } else if (!msgId) {
+          await sendTelegram(chatId, reply.content);
+        }
+      } else {
+        // No AI key — rule-based fallback.
+        const reply = await generateChiefResponse(text, history, conversationId);
+        await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
+        await sendTelegram(chatId, reply.content);
+      }
+      // Keep the Todoist mirror fresh for the Telegram channel (throttled).
       try {
         const { syncTodoistIfStale } = await import("@/lib/integrations/todoist");
         await syncTodoistIfStale();

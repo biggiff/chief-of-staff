@@ -1688,6 +1688,26 @@ async function leanGenerate(userText: string, history: HistoryMsg[], conversatio
  * Try to satisfy the request cheaply. Returns null to fall through to the full
  * reasoning path. Images and anything reflection-/decision-shaped go full.
  */
+/** Deterministic grocery add (no model). Returns null if it isn't a confident
+ *  grocery add. Exported so the streaming (Telegram) path can use it directly. */
+export async function fastGrocery(userText: string): Promise<ChiefResponse | null> {
+  const items = parseGroceryAdd(userText);
+  if (!items) return null;
+  const list = /\bcostco\b/i.test(userText) ? "costco" : "grocery";
+  try {
+    const r = await addGroceries(items, list);
+    if (!r.ok) return null;
+    const bySection: Record<string, string[]> = {};
+    for (const p of r.placed) (bySection[p.section ?? "(no section)"] ??= []).push(p.item);
+    const parts = Object.entries(bySection).map(([sec, its]) => `${its.join(", ")} (${sec})`);
+    let msg = parts.length ? `Added to your ${r.list ?? "list"} — ${parts.join("; ")}.` : "";
+    if (r.skipped.length) msg += `${msg ? " " : ""}Already on the list: ${r.skipped.join(", ")}.`;
+    return { content: msg || "Nothing to add.", metadata: { engine: "fast-grocery", placed: r.placed.length, skipped: r.skipped.length } };
+  } catch {
+    return null;
+  }
+}
+
 export async function fastPath(
   userText: string,
   history: HistoryMsg[],
@@ -1698,21 +1718,7 @@ export async function fastPath(
   const lane = classifyFast(userText);
 
   if (lane === "grocery") {
-    const items = parseGroceryAdd(userText)!;
-    const list = /\bcostco\b/i.test(userText) ? "costco" : "grocery";
-    try {
-      const r = await addGroceries(items, list);
-      if (!r.ok) return null; // Todoist hiccup → let the full path try/explain
-      const bySection: Record<string, string[]> = {};
-      for (const p of r.placed) (bySection[p.section ?? "(no section)"] ??= []).push(p.item);
-      const parts = Object.entries(bySection).map(([sec, its]) => `${its.join(", ")} (${sec})`);
-      let msg =
-        parts.length ? `Added to your ${r.list ?? "list"} — ${parts.join("; ")}.` : "";
-      if (r.skipped.length) msg += `${msg ? " " : ""}Already on the list: ${r.skipped.join(", ")}.`;
-      return { content: msg || "Nothing to add.", metadata: { engine: "fast-grocery", placed: r.placed.length, skipped: r.skipped.length } };
-    } catch {
-      return null;
-    }
+    return fastGrocery(userText);
   }
 
   if (lane === "lean") {
@@ -1730,7 +1736,8 @@ export async function generateAIResponse(
   userText: string,
   history: HistoryMsg[] = [],
   conversationId: string | null = null,
-  image?: { data: string; mediaType: string }
+  image?: { data: string; mediaType: string },
+  onDelta?: (accumulated: string) => void
 ): Promise<ChiefResponse> {
   const client = new Anthropic();
   // Layer classifier: L1 (default) is lean; L2/L3 invite the dormant intelligence.
@@ -1780,15 +1787,29 @@ export async function generateAIResponse(
     // specific tool requires thinking disabled, so we turn it off for just that call.
     const forcingNow = forceCrossroads && i === 0;
     const thinkingOff = forcingNow || forcedAnswer || !canThink;
-    const response = await client.messages.create({
+    const params = {
       model,
       max_tokens: 4096,
-      thinking: thinkingOff ? { type: "disabled" } : { type: "adaptive" },
+      thinking: thinkingOff ? { type: "disabled" as const } : { type: "adaptive" as const },
       system: `${SYSTEM_PROMPT}\n\n${context}`,
       tools: TOOLS,
       ...(forcingNow ? { tool_choice: { type: "tool" as const, name: "search_crossroads" } } : {}),
       messages,
-    });
+    };
+    let response: Anthropic.Message;
+    if (onDelta) {
+      // Stream this turn so the final answer text appears progressively. Tool-use
+      // turns emit little/no text; the answer turn streams in full.
+      let buf = "";
+      const stream = client.messages.stream(params);
+      stream.on("text", (delta) => {
+        buf += delta;
+        onDelta(buf);
+      });
+      response = await stream.finalMessage();
+    } else {
+      response = await client.messages.create(params);
+    }
 
     if (response.stop_reason === "tool_use") {
       const toolResults: Anthropic.ToolResultBlockParam[] = [];

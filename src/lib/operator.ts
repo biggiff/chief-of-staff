@@ -15,6 +15,7 @@ import {
   activityLog as activityTable,
   memories as memoriesTable,
   reminders as remindersTable,
+  appSettings as settingsTable,
   messages as messagesTable,
   workflowStates as workflowStatesTable,
   type AttentionType,
@@ -1153,6 +1154,24 @@ export async function updateWorkflowState(input: { kind?: string; id?: string; p
     conversationId: input.conversationId,
   });
   return { ok: true, id: active.id, state: merged, status: input.complete ? "complete" : active.status };
+}
+
+/* --------------------------- App settings (kv) ------------------------- */
+
+export async function getSetting(key: string): Promise<string | null> {
+  const [row] = await db.select().from(settingsTable).where(eq(settingsTable.key, key)).limit(1);
+  return row?.value ?? null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  await db
+    .insert(settingsTable)
+    .values({ key, value, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
+}
+
+export async function proofModeOn(): Promise<boolean> {
+  return (await getSetting("proof_mode")) === "on";
 }
 
 /* ------------------------------ Reminders ------------------------------ */

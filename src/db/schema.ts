@@ -372,6 +372,15 @@ export const groceryPreferences = pgTable("grocery_preferences", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* ------------------------- App settings (key/value) -------------------- */
+
+/** Tiny persisted key/value store for runtime toggles (e.g. Proof Mode). */
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* ------------------------------ Reminders ------------------------------ */
 
 /**
@@ -477,5 +486,6 @@ export type WeeklyReview = typeof weeklyReviews.$inferSelect;
 export type NewWeeklyReview = typeof weeklyReviews.$inferInsert;
 export type Reminder = typeof reminders.$inferSelect;
 export type NewReminder = typeof reminders.$inferInsert;
+export type AppSetting = typeof appSettings.$inferSelect;
 export type GroceryPreference = typeof groceryPreferences.$inferSelect;
 export type NewGroceryPreference = typeof groceryPreferences.$inferInsert;

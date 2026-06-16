@@ -61,6 +61,8 @@ import {
   createReminder,
   listReminders,
   cancelReminder,
+  proofModeOn,
+  setSetting,
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
@@ -110,6 +112,16 @@ How you talk:
 - Never use internal jargon with her: no scores, no "role health," no "attention events," no "Crossroads/Observations" as labels. You may mention Compass occasionally as a trusted map, never as a system.
 
 When in doubt: run the operation, don't evaluate the person; surface what needs managing over what needs examining; a concrete next action over a reflection; clarity over completeness.`;
+
+/** Appended to the system prompt only when Proof Mode is ON. */
+const PROOF_MODE_BLOCK = `
+
+PROOF MODE IS ON. For EVERY factual statement you make about her life or her data, append the source in brackets at the END of that sentence:
+- A fact from a tool you just called → [Source: <tool_name>] — e.g. [Source: search_crossroads], [Source: get_attention_history], [Source: get_todoist_tasks].
+- A fact from your loaded context → cite the exact entity: [Source: Identity #N], [Source: Learned Pattern #N], [Source: Right Now #N], [Source: Operating Rule], [Source: role "Name"], [Source: project "Name"], [Source: today's calendar], or [Source: latest briefing]. (The numbered items appear in your context below.)
+- An inference or opinion you're drawing → [Source: inference from <basis>] — e.g. [Source: inference from Identity #4].
+HARD RULE: if you CANNOT identify a stored source for a factual claim, you MUST NOT state it as fact. Instead say exactly one of: "I don't see evidence for that in Compass." OR "I remember discussing it, but I can't find a stored source." Never guess and never present an unsourced memory as fact.
+This applies to specific factual claims about her life/data — NOT to your questions, conversational glue, or confirmations of actions you just took. When unsure whether something is a fact vs. chit-chat, err toward citing.`;
 
 const SYSTEM_PROMPT = `${SCOUT_VOICE}
 
@@ -254,19 +266,20 @@ async function buildContext(): Promise<string> {
     const identity = mem.filter((m) => m.type === "identity");
     const patterns = mem.filter((m) => m.type === "learned_pattern");
     const temp = mem.filter((m) => m.type === "temporary_context");
+    // Numbered (#N) so Proof Mode can cite an exact memory, e.g. [Source: Identity #1].
     if (identity.length) {
       lines.push("IDENTITY — durable truths about Selena (values, goals, preferences, life structure). Treat as true unless she says otherwise:");
-      for (const m of identity) lines.push(`- ${m.content}`);
+      identity.forEach((m, i) => lines.push(`- [Identity #${i + 1}] ${m.content}`));
       lines.push("");
     }
     if (patterns.length) {
       lines.push("LEARNED PATTERNS — tendencies you've observed (with confidence; revisable — don't treat as certainties, and update them if she pushes back):");
-      for (const m of patterns) lines.push(`- [${m.confidence ?? "medium"}] ${m.content}${m.evidence ? ` (evidence: ${m.evidence})` : ""}`);
+      patterns.forEach((m, i) => lines.push(`- [Learned Pattern #${i + 1}] [${m.confidence ?? "medium"}] ${m.content}${m.evidence ? ` (evidence: ${m.evidence})` : ""}`));
       lines.push("");
     }
     if (temp.length) {
       lines.push("RIGHT NOW — temporary context that matters currently but may expire:");
-      for (const m of temp) lines.push(`- ${m.content}${m.expiresAt ? ` (until ${formatDate(m.expiresAt)})` : ""}`);
+      temp.forEach((m, i) => lines.push(`- [Right Now #${i + 1}] ${m.content}${m.expiresAt ? ` (until ${formatDate(m.expiresAt)})` : ""}`));
       lines.push("");
     }
   } catch (err) {
@@ -369,6 +382,13 @@ async function buildContext(): Promise<string> {
     lines.push("");
     lines.push(`Latest briefing (${formatDate(briefing.briefingDate)}): ${briefing.summary ?? ""}`);
     if (briefing.whyThis) lines.push(`  why: ${briefing.whyThis.replace(/\n/g, " | ")}`);
+  }
+
+  // Proof Mode (temporary, toggleable) — make every factual claim cite its source.
+  try {
+    if (await proofModeOn()) lines.push(PROOF_MODE_BLOCK);
+  } catch (err) {
+    console.error("proof mode check failed", err);
   }
 
   return lines.join("\n");
@@ -520,6 +540,11 @@ const TOOLS: Anthropic.Tool[] = [
     name: "cancel_reminder",
     description: "Cancel a pending scheduled reminder. Pass her wording as query to fuzzy-match it.",
     input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
+    name: "set_proof_mode",
+    description: "Turn Proof Mode on or off. When she says 'turn on/off proof mode' (or 'cite your sources', 'show sources', 'stop citing'). When ON, every factual claim you make must carry a [Source: …] tag. Confirm the change in one line.",
+    input_schema: { type: "object", properties: { on: { type: "boolean" } }, required: ["on"] },
   },
   {
     name: "save_checkin",
@@ -957,6 +982,12 @@ async function runTool(
 
   if (name === "cancel_reminder") {
     return j(await cancelReminder(input.query as string, conversationId));
+  }
+
+  if (name === "set_proof_mode") {
+    const on = input.on === true;
+    await setSetting("proof_mode", on ? "on" : "off");
+    return j({ ok: true, proofMode: on ? "on" : "off", note: on ? "Proof Mode on — every factual claim will carry a [Source: …] tag." : "Proof Mode off." });
   }
 
   if (name === "create_task") {
@@ -1581,13 +1612,14 @@ async function leanGenerate(userText: string, history: HistoryMsg[], conversatio
     .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
   const messages: Anthropic.MessageParam[] = [...priorTurns, { role: "user", content: userText }];
   const toolsUsed: string[] = [];
+  const proof = (await proofModeOn().catch(() => false)) ? PROOF_MODE_BLOCK : "";
 
   for (let i = 0; i < 4; i++) {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1024,
       thinking: { type: "disabled" },
-      system: `${LEAN_SYSTEM}\n\nToday is ${formatDate(todayStr())} (${appTimeZone()}).`,
+      system: `${LEAN_SYSTEM}\n\nToday is ${formatDate(todayStr())} (${appTimeZone()}).${proof}`,
       tools,
       messages,
     });

@@ -29,6 +29,7 @@ import {
   closeTodoistTask,
   reopenTodoistTask,
   deleteTodoistTask,
+  findActiveTodoistTask,
 } from "./integrations/todoist";
 import { formatDate, formatTime } from "./dates";
 
@@ -226,6 +227,31 @@ export async function completeTask(input: { task: typeof tasksTable.$inferSelect
     conversationId: input.conversationId,
   });
   return { summary };
+}
+
+/**
+ * Complete a task by searching Todoist LIVE (not the Compass mirror). Fallback for
+ * when the mirror is stale or doesn't have the item (e.g. grocery items, things
+ * just added). Closes in Todoist + reflects into the mirror if present.
+ */
+export async function completeTaskLive(query: string, conversationId?: string | null): Promise<{
+  ok: boolean; summary?: string; error?: string; needsClarification?: boolean; candidates?: string[];
+}> {
+  const { best, confident, candidates } = await findActiveTodoistTask(query);
+  if (!best) return { ok: false, error: "No matching open task found in Todoist." };
+  if (!confident) return { ok: false, needsClarification: true, candidates: candidates.map((c) => c.content) };
+  await closeTodoistTask(best.id).catch(() => {});
+  // Reflect into the mirror if the task happens to be mirrored.
+  await db.update(tasksTable).set({ status: "completed", completedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.externalId, best.id));
+  const summary = `Completed "${best.content}"`;
+  await logActivity({
+    actionKind: "complete_task_live",
+    summary,
+    entityTable: "tasks",
+    undoPayload: { todoistId: best.id },
+    conversationId,
+  });
+  return { ok: true, summary };
 }
 
 export async function createIdea(input: {
@@ -1277,6 +1303,13 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
           .update(tasksTable)
           .set({ status: "open", completedAt: null, updatedAt: new Date() })
           .where(eq(tasksTable.id, p.taskId as string));
+        break;
+      case "complete_task_live":
+        if (p.todoistId) await reopenTodoistTask(p.todoistId as string).catch(() => {});
+        await db
+          .update(tasksTable)
+          .set({ status: "open", completedAt: null, updatedAt: new Date() })
+          .where(eq(tasksTable.externalId, p.todoistId as string));
         break;
       case "create_idea":
         await db.delete(ideasTable).where(eq(ideasTable.id, p.ideaId as string));

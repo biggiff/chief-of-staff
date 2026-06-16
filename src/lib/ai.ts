@@ -30,6 +30,7 @@ import {
   logAttention,
   createTask,
   completeTask,
+  completeTaskLive,
   createIdea,
   findSimilarIdeas,
   findSimilarOpenTasks,
@@ -1026,13 +1027,19 @@ async function runTool(
   }
 
   if (name === "complete_task") {
-    const { best, confident, candidates } = await findOpenTask(input.query as string);
-    if (!best) return j({ ok: false, error: "No open task matched.", query: input.query });
-    if (!confident) {
-      return j({ ok: false, needsClarification: true, candidates: candidates.map((c) => c.task.title) });
+    const query = input.query as string;
+    const { best, confident, candidates } = await findOpenTask(query);
+    // Mirror has a confident match → close it.
+    if (best && confident) {
+      const { summary } = await completeTask({ task: best, conversationId });
+      return j({ ok: true, summary });
     }
-    const { summary } = await completeTask({ task: best, conversationId });
-    return j({ ok: true, summary });
+    // Mirror missed or was ambiguous → search Todoist LIVE (handles grocery items
+    // and anything added since the last sync, which the mirror won't have).
+    const live = await completeTaskLive(query, conversationId);
+    if (live.ok || live.needsClarification) return j(live);
+    if (!best) return j({ ok: false, error: "No open task matched in Compass or Todoist.", query });
+    return j({ ok: false, needsClarification: true, candidates: candidates.map((c) => c.task.title) });
   }
 
   if (name === "create_idea") {

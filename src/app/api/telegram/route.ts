@@ -59,6 +59,14 @@ export async function POST(req: NextRequest) {
       const reply = await generateChiefResponse(text, history, conversationId);
       await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
       await sendTelegram(chatId, reply.content);
+      // Keep the Todoist mirror fresh for the Telegram channel too (the web route
+      // already does this) so retrieval stays current. Throttled internally.
+      try {
+        const { syncTodoistIfStale } = await import("@/lib/integrations/todoist");
+        await syncTodoistIfStale();
+      } catch (err) {
+        console.error("telegram post-reply sync failed", err);
+      }
     } catch (err) {
       console.error("telegram turn failed", err);
       await sendTelegram(chatId, "Something hiccuped on my end — try that again?").catch(() => {});

@@ -162,6 +162,45 @@ export async function listActiveTasksInProject(projectId: string): Promise<{ id:
   return tasks.filter((t) => t.project_id === projectId).map((t) => ({ id: t.id, content: t.content }));
 }
 
+/**
+ * Fuzzy-find an open task across ALL projects, LIVE from Todoist — bypasses the
+ * (possibly stale) Compass mirror. Used as the completion fallback so grocery and
+ * recently-added items can always be closed.
+ */
+export async function findActiveTodoistTask(query: string): Promise<{
+  best: { id: string; content: string } | null;
+  confident: boolean;
+  candidates: { id: string; content: string }[];
+}> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const tasks = await fetchActiveTasks(token);
+  const q = query.toLowerCase().trim();
+  const qWords = q.split(/\W+/).filter(Boolean);
+  const scored = tasks
+    .map((t) => {
+      const title = t.content.toLowerCase();
+      let score = 0;
+      if (title === q) score = 100;
+      else if (title.includes(q) || q.includes(title)) score = 80;
+      else {
+        const tw = new Set(title.split(/\W+/).filter(Boolean));
+        const overlap = qWords.filter((w) => tw.has(w)).length;
+        score = (overlap / Math.max(qWords.length, 1)) * 60;
+      }
+      return { id: t.id, content: t.content, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  const second = scored[1];
+  const confident = !!best && best.score >= 50 && (!second || best.score - second.score >= 15);
+  return {
+    best: best && best.score >= 30 ? { id: best.id, content: best.content } : null,
+    confident,
+    candidates: scored.filter((s) => s.score >= 30).slice(0, 5).map((s) => ({ id: s.id, content: s.content })),
+  };
+}
+
 /** Find an open task by name within a project (single lookup — re-fetches the list). */
 export async function findTaskInProject(projectId: string, query: string): Promise<{ id: string; content: string } | null> {
   const inProj = await listActiveTasksInProject(projectId);

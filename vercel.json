@@ -7,6 +7,10 @@
     {
       "path": "/api/sms/morning",
       "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/reminders/tick",
+      "schedule": "* * * * *"
     }
   ]
 }

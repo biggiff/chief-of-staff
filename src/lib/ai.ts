@@ -58,6 +58,9 @@ import {
   getActiveWorkflow,
   startWorkflow,
   updateWorkflowState,
+  createReminder,
+  listReminders,
+  cancelReminder,
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
@@ -509,6 +512,29 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "schedule_reminder",
+    description:
+      "Schedule a one-shot timed nudge to TEXT her at a specific wall-clock time — for 'remind me at 3pm to call the dentist', 'text me tomorrow at 9 to take out the trash', 'ping me in 2 hours to…'. Scout (not Todoist) sends it to her via Telegram at that time. Compute the absolute local date+time from her phrasing and TODAY'S date (shown in your context), and pass it as `at` in 24-hour local time 'YYYY-MM-DDTHH:mm'. Confirm the exact time back to her in one line. (Use this for time-based nudges; use create_task for to-do items that live on a list.)",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "What the reminder should say to her (e.g. 'Call the dentist')." },
+        at: { type: "string", description: "Absolute local time, 24h: 'YYYY-MM-DDTHH:mm' in her timezone." },
+      },
+      required: ["text", "at"],
+    },
+  },
+  {
+    name: "list_reminders",
+    description: "List her upcoming scheduled reminders (the timed texts), soonest first.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "cancel_reminder",
+    description: "Cancel a pending scheduled reminder. Pass her wording as query to fuzzy-match it.",
+    input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
     name: "save_checkin",
     description: "Save a quick check-in after you've asked the user: energy 1-10, overwhelm 1-10, biggest win, biggest concern, what they're avoiding. Call once you have their answers.",
     input_schema: {
@@ -927,6 +953,22 @@ async function runTool(
         limit: input.limit as number | undefined,
       }),
     });
+  }
+
+  if (name === "schedule_reminder") {
+    const when = parseLocalDateTime(input.at as string);
+    if (!when) return j({ ok: false, error: "Couldn't parse that time. Pass 'at' as 'YYYY-MM-DDTHH:mm' local." });
+    if (when.getTime() < Date.now() - 60_000) return j({ ok: false, error: "That time is in the past — pick a future time." });
+    const { summary } = await createReminder({ text: input.text as string, remindAt: when, conversationId });
+    return j({ ok: true, summary, at: `${formatDate(when)} ${formatTime(when)}` });
+  }
+
+  if (name === "list_reminders") {
+    return j({ ok: true, reminders: await listReminders() });
+  }
+
+  if (name === "cancel_reminder") {
+    return j(await cancelReminder(input.query as string, conversationId));
   }
 
   if (name === "create_task") {

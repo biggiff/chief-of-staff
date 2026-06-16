@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ilike } from "drizzle-orm";
+import { and, desc, eq, isNull, ilike, lte } from "drizzle-orm";
 import {
   db,
   roles as rolesTable,
@@ -14,6 +14,7 @@ import {
   insights as insightsTable,
   activityLog as activityTable,
   memories as memoriesTable,
+  reminders as remindersTable,
   messages as messagesTable,
   workflowStates as workflowStatesTable,
   type AttentionType,
@@ -1154,6 +1155,63 @@ export async function updateWorkflowState(input: { kind?: string; id?: string; p
   return { ok: true, id: active.id, state: merged, status: input.complete ? "complete" : active.status };
 }
 
+/* ------------------------------ Reminders ------------------------------ */
+
+export async function createReminder(input: { text: string; remindAt: Date; conversationId?: string | null }) {
+  const [row] = await db
+    .insert(remindersTable)
+    .values({ text: input.text.slice(0, 1000), remindAt: input.remindAt, source: "chat" })
+    .returning();
+  const summary = `Set a reminder for ${formatDate(input.remindAt)} ${formatTime(input.remindAt)}: "${input.text.slice(0, 80)}"`;
+  await logActivity({
+    actionKind: "reminder_create",
+    summary,
+    entityTable: "reminders",
+    entityId: row.id,
+    undoPayload: { id: row.id },
+    conversationId: input.conversationId,
+  });
+  return { ok: true, id: row.id, summary };
+}
+
+/** Upcoming pending reminders (soonest first). */
+export async function listReminders(limit = 20) {
+  const rows = await db
+    .select()
+    .from(remindersTable)
+    .where(eq(remindersTable.status, "pending"))
+    .orderBy(remindersTable.remindAt)
+    .limit(limit);
+  return rows.map((r) => ({ id: r.id, text: r.text, at: `${formatDate(r.remindAt)} ${formatTime(r.remindAt)}` }));
+}
+
+export async function cancelReminder(query: string, conversationId?: string | null) {
+  const rows = await db.select().from(remindersTable).where(eq(remindersTable.status, "pending"));
+  const q = query.toLowerCase().trim();
+  const match =
+    rows.find((r) => r.text.toLowerCase() === q) ||
+    rows.find((r) => r.text.toLowerCase().includes(q)) ||
+    rows.find((r) => q.includes(r.text.toLowerCase().slice(0, 20))) ||
+    null;
+  if (!match) return { ok: false, message: `No pending reminder matching "${query}".` };
+  await db.update(remindersTable).set({ status: "canceled" }).where(eq(remindersTable.id, match.id));
+  const summary = `Canceled reminder: "${match.text.slice(0, 80)}"`;
+  await logActivity({ actionKind: "reminder_cancel", summary, entityTable: "reminders", entityId: match.id, undoPayload: { id: match.id }, conversationId });
+  return { ok: true, message: summary };
+}
+
+/** Reminders due now (for the tick cron). */
+export async function dueReminders() {
+  return db
+    .select()
+    .from(remindersTable)
+    .where(and(eq(remindersTable.status, "pending"), lte(remindersTable.remindAt, new Date())));
+}
+
+export async function markReminderSent(id: string) {
+  await db.update(remindersTable).set({ status: "sent", sentAt: new Date() }).where(eq(remindersTable.id, id));
+}
+
 export async function undoLast(): Promise<{ ok: boolean; message: string }> {
   const [last] = await db
     .select()
@@ -1263,6 +1321,12 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         break;
       case "memory_create":
         await db.delete(memoriesTable).where(eq(memoriesTable.id, p.id as string));
+        break;
+      case "reminder_create":
+        await db.delete(remindersTable).where(eq(remindersTable.id, p.id as string));
+        break;
+      case "reminder_cancel":
+        await db.update(remindersTable).set({ status: "pending" }).where(eq(remindersTable.id, p.id as string));
         break;
       case "workflow_start":
         await db.delete(workflowStatesTable).where(eq(workflowStatesTable.id, p.id as string));

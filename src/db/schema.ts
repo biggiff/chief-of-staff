@@ -49,6 +49,7 @@ export type InsightStatus = "open" | "surfaced" | "dismissed" | "resolved";
 export type MemoryType = "identity" | "learned_pattern" | "temporary_context";
 export type MemoryStatus = "active" | "archived" | "superseded";
 export type WorkflowStatus = "active" | "paused" | "complete";
+export type ReminderStatus = "pending" | "sent" | "canceled";
 
 /* -------------------------------- Roles -------------------------------- */
 
@@ -370,6 +371,24 @@ export const groceryPreferences = pgTable("grocery_preferences", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* ------------------------------ Reminders ------------------------------ */
+
+/**
+ * One-shot timed reminders: "text me at 3pm to call the dentist." A frequent
+ * cron (/api/reminders/tick) sends each one via the owner's channel (Telegram)
+ * when it comes due. Distinct from Todoist tasks — these are nudges Scout pushes
+ * to her at a wall-clock time, not items on a list.
+ */
+export const reminders = pgTable("reminders", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  text: text("text").notNull(),
+  remindAt: timestamp("remind_at", { withTimezone: true }).notNull(),
+  status: text("status").$type<ReminderStatus>().notNull().default("pending"), // pending | sent | canceled
+  source: text("source").notNull().default("chat"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+});
+
 /* ------------------------- Weekly review ------------------------------- */
 
 /**
@@ -452,5 +471,7 @@ export type WorkflowState = typeof workflowStates.$inferSelect;
 export type NewWorkflowState = typeof workflowStates.$inferInsert;
 export type WeeklyReview = typeof weeklyReviews.$inferSelect;
 export type NewWeeklyReview = typeof weeklyReviews.$inferInsert;
+export type Reminder = typeof reminders.$inferSelect;
+export type NewReminder = typeof reminders.$inferInsert;
 export type GroceryPreference = typeof groceryPreferences.$inferSelect;
 export type NewGroceryPreference = typeof groceryPreferences.$inferInsert;

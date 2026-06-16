@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { and, eq, lte } from "drizzle-orm";
 import { db, tasks as tasksTable } from "@/db";
 import { startEndOfToday, formatTime } from "@/lib/dates";
-import { smsEnabled, ownerPrimaryPhone, sendSms } from "@/lib/integrations/sms";
+import { notifyOwner, ownerReachable } from "@/lib/integrations/notify";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -17,8 +17,7 @@ async function run(req: NextRequest) {
   if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const to = ownerPrimaryPhone();
-  if (!smsEnabled() || !to) return NextResponse.json({ ok: false, error: "SMS not configured." });
+  if (!(await ownerReachable())) return NextResponse.json({ ok: false, error: "No messaging channel configured." });
 
   const { end } = startEndOfToday();
 
@@ -51,13 +50,8 @@ async function run(req: NextRequest) {
   }
   parts.push("Text me to add or knock anything out.");
 
-  try {
-    await sendSms(to, parts.join(" "));
-    return NextResponse.json({ ok: true, sent: true });
-  } catch (err) {
-    console.error("morning send failed", err);
-    return NextResponse.json({ ok: false, error: "send failed" }, { status: 500 });
-  }
+  const res = await notifyOwner(parts.join(" "));
+  return NextResponse.json(res, { status: res.ok ? 200 : 500 });
 }
 
 export const GET = run;

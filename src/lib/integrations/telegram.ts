@@ -43,6 +43,23 @@ export async function sendTelegram(chatId: number | string, text: string): Promi
   await sendTelegramMessage(chatId, text);
 }
 
+/** Download a Telegram file (photo/doc) and return it base64 + media type, for vision. */
+export async function getTelegramFile(fileId: string): Promise<{ data: string; mediaType: string } | null> {
+  if (!telegramEnabled()) return null;
+  const meta = await fetch(`https://api.telegram.org/bot${TOKEN()}/getFile?file_id=${encodeURIComponent(fileId)}`);
+  if (!meta.ok) return null;
+  const j = (await meta.json()) as { result?: { file_path?: string } };
+  const path = j.result?.file_path;
+  if (!path) return null;
+  const dl = await fetch(`https://api.telegram.org/file/bot${TOKEN()}/${path}`);
+  if (!dl.ok) return null;
+  const buf = Buffer.from(await dl.arrayBuffer());
+  const ext = path.split(".").pop()?.toLowerCase();
+  const mediaType =
+    ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
+  return { data: buf.toString("base64"), mediaType };
+}
+
 /** Send a message and return its message_id (for streaming edits). */
 export async function sendTelegramMessage(chatId: number | string, text: string): Promise<number | null> {
   if (!telegramEnabled()) throw new Error("Telegram not configured.");

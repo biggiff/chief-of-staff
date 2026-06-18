@@ -228,7 +228,7 @@ type Layer = "L1" | "L2" | "L3";
  *  pattern recognition. Intelligence engines stay dormant unless the layer (or an
  *  explicit tool call) calls for them. */
 const L3_INTENT = /\b(why|reflect|think through|thinking through|figur(?:e|ing) out|how am i (?:doing|really)|what am i avoiding|avoidance|patterns?|noticing|notice about|what do you (?:notice|see)|going on with my life|chief of staff|fooling myself|wrestling|honestly|real talk)\b/i;
-const L2_INTENT = /\b(plan|planning|prioriti[sz]|organi[sz]e|strateg|this week|next week|week ahead|status|roadmap|focus on|what'?s slipping|what'?s falling|decisions?\b|crossroad|big picture|catch me up|review)\b/i;
+const L2_INTENT = /\b(plan|planning|prioriti[sz]|organi[sz]e|strateg|this week|next week|week ahead|status|roadmap|focus on|what'?s slipping|what'?s falling|decisions?\b|crossroad|big picture|catch me up|review|drills?|\bcues?\b|library|playbook|\bsaved\b|\bstored\b|what do i know|what do i have|recipe|workflow|the process)\b/i;
 export function classifyLayer(text: string): Layer {
   const t = text.trim();
   if (L3_INTENT.test(t)) return "L3";

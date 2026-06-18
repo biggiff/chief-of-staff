@@ -105,8 +105,18 @@ export async function generateChiefResponse(
       // Usefulness per second: trivial/simple requests skip the heavy context +
       // reasoning path. Returns null when the request needs the full treatment.
       const fast = await fastPath(userText, history, conversationId, image);
-      if (fast) return fast;
-      return await generateAIResponse(userText, history, conversationId, image);
+      const reply = fast ?? (await generateAIResponse(userText, history, conversationId, image));
+      // CAPTURE SAFETY NET: deterministically preserve the raw text of any
+      // multi-sentence informational message, even if Scout routed it to a
+      // task/idea/etc — so meaning is never lost to a routing mistake.
+      try {
+        const tools = (reply.metadata?.toolsUsed as string[] | undefined) ?? [];
+        const { maybeSafetyNetCapture } = await import("./operator");
+        await maybeSafetyNetCapture(userText, conversationId, tools);
+      } catch (e) {
+        console.error("safety-net capture failed", e);
+      }
+      return reply;
     } catch (err) {
       console.error("AI layer failed, falling back to rules:", err);
       if (image) {

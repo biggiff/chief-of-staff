@@ -1220,6 +1220,46 @@ export async function createKnowledgeNote(input: {
   return { ok: true, id: row.id, summary };
 }
 
+/** Does this message look like multi-sentence INFORMATIONAL content worth keeping
+ *  verbatim? (declarative substance — not a short op, command, or pure question). */
+function isMultiSentenceInformational(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 120) return false; // too short to be a real info dump
+  if (/^(add|remind|schedule|set|complete|finish|done|delete|cancel|mark|undo|reschedule|turn (on|off))\b/i.test(t)) return false;
+  const sentences = t.split(/[.!?]+(?:\s|$)/).map((s) => s.trim()).filter(Boolean);
+  const multi = sentences.length >= 2 || t.length >= 240;
+  if (!multi) return false;
+  // Needs at least one declarative sentence (not just questions).
+  const declaratives = sentences.filter((s) => !s.endsWith("?") && !/^(what|who|when|where|why|how|is|are|do|does|did|can|could|should|would|will)\b/i.test(s));
+  return declaratives.length >= 1;
+}
+
+/**
+ * Capture safety net. If the user shared multi-sentence informational content and
+ * Scout did NOT already persist it via capture_note, store the RAW text as a
+ * knowledge note (kind=note, topic="inbox") so meaning is never lost to a routing
+ * mistake — regardless of what else Scout did with the message.
+ */
+export async function maybeSafetyNetCapture(text: string, conversationId: string | null, toolsUsed: string[]): Promise<void> {
+  if (toolsUsed.includes("capture_note")) return; // Scout already preserved it richly
+  const raw = text.trim();
+  if (!isMultiSentenceInformational(raw)) return;
+  // Dedup: don't re-store the exact same source text.
+  const dupe = await db.select().from(knowledgeTable).where(eq(knowledgeTable.sourceText, raw)).limit(1);
+  if (dupe.length) return;
+  const firstLine = raw.split(/\n|(?<=[.!?])\s/)[0].trim();
+  const title = (firstLine.length > 80 ? firstLine.slice(0, 78) + "…" : firstLine) || "Captured note";
+  await createKnowledgeNote({
+    title,
+    kind: "note",
+    summary: null,
+    body: raw,
+    sourceText: raw,
+    topic: "inbox",
+    conversationId,
+  });
+}
+
 /** Search knowledge by free text AND/OR topic/role/project/kind. Returns FULL
  *  bodies so Scout can reconstruct the actual substance, not just titles. */
 export async function searchKnowledge(opts?: {

@@ -61,6 +61,8 @@ import {
   createReminder,
   listReminders,
   cancelReminder,
+  createKnowledgeNote,
+  searchKnowledge,
   proofModeOn,
   setSetting,
   undoLast,
@@ -164,7 +166,9 @@ Reminders vs tasks: when she asks to be REMINDED or texted AT a time ("remind me
 
 Tasks & reminders live in Todoist (the source of truth). create_task/complete_task go through Todoist. You CAN set due dates AND times via due_string ("today at 3pm", "tomorrow morning", "Friday at 10am") — use it for timed reminders and confirm exactly what you scheduled (Todoist delivers it; don't promise a push beyond that). If a time/date is ambiguous, ask one short question. For complete_task, pass her wording; if the match is unclear, ask which one.
 
-Ideas: when create_idea reports duplicateFound, don't duplicate — ask whether to add a note (add_idea_note) or make a new one (force=true).
+PRESERVE MEANING — the most important capture rule: when she gives you REUSABLE KNOWLEDGE (a drill, a workflow/process, a system, a documented idea, reference info, meeting notes — anything she'll want back later with its DETAILS), you MUST store it with capture_note, preserving the FULL substance in the body and her verbatim words in source_text. NEVER reduce reusable knowledge to a bare title, an idea, or a task. A title-only record is a capture failure. Decompose a brain dump: the knowledge → capture_note (full detail, structured by kind); any genuine to-dos in it → tasks via action_items (actions only); a fleeting detail-free spark → create_idea. If a dump has several distinct knowledge items (e.g. multiple drills), capture each as its own note sharing the same topic/project so each is retrievable. When asked to recall stored knowledge, use search_knowledge (it returns full bodies) and reconstruct the real substance — never answer "just titles."
+
+Ideas: only for THIN sparks with no real detail. If there's substance, use capture_note instead. When create_idea reports duplicateFound, don't duplicate — ask whether to add a note (add_idea_note) or make a new one (force=true).
 
 No duplicate tasks: when create_task reports duplicateFound, do NOT create another — tell her that one's already on the list and ask if she really wants a second (force=true only after she confirms). Never create the same task repeatedly.
 
@@ -515,8 +519,43 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
   },
   {
+    name: "capture_note",
+    description:
+      "Preserve REUSABLE KNOWLEDGE in full — the SUBSTANCE of what she shares, never reduced to a title. Use this whenever she gives you something she'll want to retrieve and reconstruct later: a drill, a process/workflow, a system, a documented idea, reference info, meeting notes. CRITICAL: store the FULL detail in `body` and her verbatim words in `source_text` — do NOT compress to a label. For recognizable kinds, structure the body: drill → name/setup/instructions/purpose/coaching cues/skill level/variations; process → name/steps/owner/dependencies/notes; idea → idea/problem solved/feature details/assumptions/open questions; system → name/purpose/rules/people/status. Link it with role_name and/or project_name and/or topic. If the dump ALSO contains action items, pass them as action_items (they become separate tasks) — but never turn the knowledge itself into tasks. If it's several distinct items (e.g. 5 drills), call this once per item sharing the same topic/project.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "The name of the thing (e.g. 'Set to Self + Squat Push')." },
+        kind: { type: "string", enum: ["drill", "process", "idea", "system", "reference", "note"] },
+        summary: { type: "string", description: "1–3 sentence useful summary." },
+        body: { type: "string", description: "FULL structured detail (markdown). The substance — never a title." },
+        source_text: { type: "string", description: "Her original words, verbatim — preserve exactly." },
+        role_name: { type: "string" },
+        project_name: { type: "string" },
+        topic: { type: "string", description: "Free-text tag for grouping (e.g. 'volleyball drills', 'Gifford & Co.')." },
+        action_items: { type: "array", items: { type: "string" }, description: "Optional to-dos extracted from the same dump → become tasks." },
+      },
+      required: ["title", "body"],
+    },
+  },
+  {
+    name: "search_knowledge",
+    description:
+      "Retrieve stored knowledge notes with their FULL bodies (so you can reconstruct the real substance, not just titles). Use for 'give me the volleyball drill library', 'what drills do I have for setting', 'what coaching cues have I saved', 'what do I know about Gifford & Co.', 'find the PTO receipt process'. Filter by query (free text), topic, role_name, project_name, and/or kind.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        topic: { type: "string" },
+        role_name: { type: "string" },
+        project_name: { type: "string" },
+        kind: { type: "string", enum: ["drill", "process", "idea", "system", "reference", "note"] },
+      },
+    },
+  },
+  {
     name: "create_idea",
-    description: "Capture an idea for later. The result may report a likely duplicate (duplicateFound) — if so, ask the user before creating. Pass force=true only after they confirm they want a new one.",
+    description: "Capture a THIN spark with no real detail yet ('maybe a snack station'). If it has actual substance/detail, use capture_note instead — don't reduce knowledge to an idea. The result may report a likely duplicate (duplicateFound) — if so, ask before creating. force=true only after they confirm.",
     input_schema: {
       type: "object",
       properties: {
@@ -1074,6 +1113,47 @@ async function runTool(
     if (live.ok || live.needsClarification) return j(live);
     if (!best) return j({ ok: false, error: "No open task matched in Compass or Todoist.", query });
     return j({ ok: false, needsClarification: true, candidates: candidates.map((c) => c.task.title) });
+  }
+
+  if (name === "capture_note") {
+    const role = matchRole(input.role_name as string | undefined, roles);
+    const projectId = await resolveProjectId(role?.id ?? null, input.project_name as string | undefined);
+    const res = await createKnowledgeNote({
+      title: input.title as string,
+      kind: input.kind as never,
+      summary: (input.summary as string) ?? null,
+      body: input.body as string,
+      sourceText: (input.source_text as string) ?? null,
+      role,
+      projectId,
+      topic: (input.topic as string) ?? null,
+      conversationId,
+    });
+    // Extract any action items as SEPARATE tasks — never fold them into the note.
+    const actions = input.action_items as string[] | undefined;
+    const tasksCreated: string[] = [];
+    if (Array.isArray(actions)) {
+      for (const a of actions.filter(Boolean)) {
+        try {
+          await createTask({ title: a, role: role ?? undefined, projectId, conversationId });
+          tasksCreated.push(a);
+        } catch { /* skip a failed task, keep the note */ }
+      }
+    }
+    return j({ ok: true, summary: res.summary, tasksCreated });
+  }
+
+  if (name === "search_knowledge") {
+    return j({
+      ok: true,
+      notes: await searchKnowledge({
+        query: input.query as string | undefined,
+        topic: input.topic as string | undefined,
+        roleName: input.role_name as string | undefined,
+        projectName: input.project_name as string | undefined,
+        kind: input.kind as never,
+      }),
+    });
   }
 
   if (name === "create_idea") {

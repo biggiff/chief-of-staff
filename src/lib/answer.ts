@@ -14,6 +14,7 @@ import {
   listActivity,
   listIdeas,
   getCrossroadDetail,
+  searchKnowledge,
 } from "./operator";
 import { startEndOfToday } from "./dates";
 
@@ -153,9 +154,20 @@ export async function gatherAbout(topic?: string) {
 
   const rs = matchedRole ? scored.find((s) => s.role.id === matchedRole!.id) : null;
 
+  // Knowledge notes — the actual SUBSTANCE (full bodies) for this topic/role/project.
+  // Role-first (so every note in the area surfaces), then project, then free text.
+  const knowledge = await searchKnowledge(
+    matchedRole
+      ? { roleName: matchedRole.name, limit: 15 }
+      : matchedProjects.length
+        ? { projectName: matchedProjects[0].name, limit: 15 }
+        : { query: t, limit: 15 }
+  );
+
   return {
     mode: "topic" as const,
     topic: t,
+    knowledge,
     resolvedTo: {
       role: matchedRole?.name ?? null,
       projects: matchedProjects.map((p) => p.name),

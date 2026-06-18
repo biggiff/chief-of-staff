@@ -50,6 +50,7 @@ export type MemoryType = "identity" | "learned_pattern" | "temporary_context";
 export type MemoryStatus = "active" | "archived" | "superseded";
 export type WorkflowStatus = "active" | "paused" | "complete";
 export type ReminderStatus = "pending" | "sent" | "canceled";
+export type KnowledgeKind = "drill" | "process" | "idea" | "system" | "reference" | "note";
 export type Recurrence = "daily" | "weekdays" | "weekly" | "monthly";
 
 /* -------------------------------- Roles -------------------------------- */
@@ -372,6 +373,32 @@ export const groceryPreferences = pgTable("grocery_preferences", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/* ----------------------------- Knowledge notes ------------------------- */
+
+/**
+ * Durable, retrievable knowledge — the SUBSTANCE of what Selena tells Scout
+ * (a drill, a process, a system, a documented idea), not just a label. Capture
+ * must preserve meaning: raw source text + a summary + the full body + the right
+ * role/project/topic. This is the second-brain store; tasks are for actions only.
+ */
+export const knowledgeNotes = pgTable("knowledge_notes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull(),
+  kind: text("kind").$type<KnowledgeKind>().notNull().default("note"),
+  summary: text("summary"),
+  body: text("body").notNull(), // full structured detail (markdown)
+  details: jsonb("details"), // optional structured fields for recognized kinds
+  sourceText: text("source_text"), // raw original message(s), verbatim
+  roleId: uuid("role_id").references(() => roles.id, { onDelete: "set null" }),
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+  topic: text("topic"), // free-text tag for grouping/retrieval
+  sourceConversationId: uuid("source_conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  sourceMessageId: uuid("source_message_id"),
+  status: text("status").notNull().default("active"), // active | archived
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* ------------------------- App settings (key/value) -------------------- */
 
 /** Tiny persisted key/value store for runtime toggles (e.g. Proof Mode). */
@@ -487,5 +514,7 @@ export type NewWeeklyReview = typeof weeklyReviews.$inferInsert;
 export type Reminder = typeof reminders.$inferSelect;
 export type NewReminder = typeof reminders.$inferInsert;
 export type AppSetting = typeof appSettings.$inferSelect;
+export type KnowledgeNote = typeof knowledgeNotes.$inferSelect;
+export type NewKnowledgeNote = typeof knowledgeNotes.$inferInsert;
 export type GroceryPreference = typeof groceryPreferences.$inferSelect;
 export type NewGroceryPreference = typeof groceryPreferences.$inferInsert;

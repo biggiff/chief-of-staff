@@ -16,7 +16,9 @@ import {
   memories as memoriesTable,
   reminders as remindersTable,
   appSettings as settingsTable,
+  knowledgeNotes as knowledgeTable,
   messages as messagesTable,
+  type KnowledgeKind,
   workflowStates as workflowStatesTable,
   type AttentionType,
   type Priority,
@@ -1177,6 +1179,94 @@ export async function updateWorkflowState(input: { kind?: string; id?: string; p
   return { ok: true, id: active.id, state: merged, status: input.complete ? "complete" : active.status };
 }
 
+/* ----------------------------- Knowledge notes ------------------------- */
+
+export async function createKnowledgeNote(input: {
+  title: string;
+  kind?: KnowledgeKind;
+  summary?: string | null;
+  body: string;
+  details?: unknown;
+  sourceText?: string | null;
+  role?: Role | null;
+  projectId?: string | null;
+  topic?: string | null;
+  conversationId?: string | null;
+}) {
+  const [row] = await db
+    .insert(knowledgeTable)
+    .values({
+      title: input.title.slice(0, 300),
+      kind: input.kind ?? "note",
+      summary: input.summary ?? null,
+      body: input.body, // full substance — never truncated to a label
+      details: (input.details ?? null) as never,
+      sourceText: input.sourceText ?? null,
+      roleId: input.role?.id ?? null,
+      projectId: input.projectId ?? null,
+      topic: input.topic ?? null,
+      sourceConversationId: input.conversationId ?? null,
+    })
+    .returning();
+  const summary = `Saved knowledge (${input.kind ?? "note"}): "${input.title.slice(0, 80)}"`;
+  await logActivity({
+    actionKind: "knowledge_create",
+    summary,
+    entityTable: "knowledge_notes",
+    entityId: row.id,
+    undoPayload: { id: row.id },
+    conversationId: input.conversationId,
+  });
+  return { ok: true, id: row.id, summary };
+}
+
+/** Search knowledge by free text AND/OR topic/role/project/kind. Returns FULL
+ *  bodies so Scout can reconstruct the actual substance, not just titles. */
+export async function searchKnowledge(opts?: {
+  query?: string;
+  topic?: string;
+  roleName?: string;
+  projectName?: string;
+  kind?: KnowledgeKind;
+  limit?: number;
+}) {
+  const rows = await db.select().from(knowledgeTable).orderBy(desc(knowledgeTable.createdAt));
+  const roles = await activeRoles();
+  const roleName = new Map(roles.map((r) => [r.id, r.name]));
+  const projRows = await db.select().from(projectsTable);
+  const projName = new Map(projRows.map((p) => [p.id, p.name]));
+  const role = opts?.roleName ? matchRole(opts.roleName, roles) : null;
+  const q = opts?.query?.toLowerCase().trim();
+  const topicQ = opts?.topic?.toLowerCase().trim();
+  const projQ = opts?.projectName?.toLowerCase().trim();
+
+  return rows
+    .filter((n) => n.status === "active")
+    .filter((n) => !opts?.kind || n.kind === opts.kind)
+    .filter((n) => !role || n.roleId === role.id)
+    .filter((n) => !topicQ || (n.topic ?? "").toLowerCase().includes(topicQ))
+    .filter((n) => {
+      if (!projQ) return true;
+      const pn = n.projectId ? (projName.get(n.projectId) ?? "").toLowerCase() : "";
+      return pn.includes(projQ) || (n.topic ?? "").toLowerCase().includes(projQ);
+    })
+    .filter((n) => {
+      if (!q) return true;
+      const hay = `${n.title}\n${n.summary ?? ""}\n${n.body}\n${n.topic ?? ""}`.toLowerCase();
+      return hay.includes(q) || q.split(/\W+/).filter((w) => w.length >= 4).some((w) => hay.includes(w));
+    })
+    .slice(0, opts?.limit ?? 25)
+    .map((n) => ({
+      title: n.title,
+      kind: n.kind,
+      summary: n.summary,
+      body: n.body,
+      topic: n.topic,
+      role: n.roleId ? roleName.get(n.roleId) ?? null : null,
+      project: n.projectId ? projName.get(n.projectId) ?? null : null,
+    }));
+}
+
 /* --------------------------- App settings (kv) ------------------------- */
 
 export async function getSetting(key: string): Promise<string | null> {
@@ -1382,6 +1472,9 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         break;
       case "reminder_create":
         await db.delete(remindersTable).where(eq(remindersTable.id, p.id as string));
+        break;
+      case "knowledge_create":
+        await db.delete(knowledgeTable).where(eq(knowledgeTable.id, p.id as string));
         break;
       case "reminder_cancel":
         await db.update(remindersTable).set({ status: "pending" }).where(eq(remindersTable.id, p.id as string));

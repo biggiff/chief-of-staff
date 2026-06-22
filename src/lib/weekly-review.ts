@@ -125,7 +125,7 @@ async function gatherWeek(): Promise<string> {
     lines.push("");
   }
 
-  lines.push(`HABITS: ${thisSnap.workouts} workouts this week${lastSnap ? ` (last week: ${lastSnap.workouts})` : ""}. Tasks completed: ${thisSnap.tasksCompleted}${lastSnap ? ` (last week: ${lastSnap.tasksCompleted})` : ""}.`);
+  lines.push(`HABITS: ${thisSnap.workouts} workouts this week${lastSnap ? ` (last week: ${lastSnap.workouts})` : ""}. Tasks closed off lists: ${thisSnap.tasksCompleted}${lastSnap ? ` (last week: ${lastSnap.tasksCompleted})` : ""} (closed ≠ done — don't treat as accomplishments).`);
   lines.push("");
 
   // ---- Change streams (what actually moved) ----
@@ -161,7 +161,7 @@ async function gatherWeek(): Promise<string> {
 
   const completed = (await db.select().from(tasksTable)).filter((t) => inWindow(t.completedAt, start, end));
   if (completed.length) {
-    lines.push("TASKS COMPLETED THIS WEEK:");
+    lines.push(`TASKS CLOSED/REMOVED FROM LISTS THIS WEEK (${completed.length}) — IMPORTANT: a closed task does NOT mean the work was done; she may have just cleared the list. Do NOT report these as accomplishments or say anything is "done" based on them:`);
     completed.slice(0, 20).forEach((t) => lines.push(`  - ${t.title}${t.roleId ? ` (${roleName.get(t.roleId) ?? "?"})` : ""}`));
     lines.push("");
   }
@@ -210,6 +210,8 @@ If there's a prior week, CLOSE THE LOOP on what you told her to focus on last we
 You are her CHIEF OF STAFF reviewing operations — not a coach evaluating her life. Lead with what needs managing. Pattern recognition and accountability are supporting; relationship/health/emotional threads are occasional and brief, never the dominant lens. If a week was mostly operational, the review should read mostly operational.
 
 Hard rules: no dashboard feel, no metrics dump, no role-by-role report card, no manufactured urgency, no generic productivity advice, no therapizing. Judgment over reporting, synthesis over summary, changes over snapshots. Warm, direct, a little funny when it's earned — her chief of staff, not software.
+
+CRITICAL — do NOT infer accomplishment from data: a closed or deleted task is NOT proof the real thing got done (she often clears tasks without doing the work). NEVER say a project/area is "done" or "handled" from task counts alone. State closures factually at most ("N tasks were closed under X"), and only claim something actually happened if there's direct evidence — a logged note, her saying so, or a completed item with real detail. When in doubt, describe what the data shows, not what you assume it means. Better to under-claim than to tell her she did something she didn't.
 
 After the prose, output exactly one line:
 <<DATA>>{"throughline":"...","priorities":[{"item":"...","why":"..."},...],"biggestQuestion":"..."}<<END>>
@@ -277,11 +279,18 @@ export async function getLatestWeeklyReview(): Promise<WeeklyReview | null> {
   return r ?? null;
 }
 
-/** This week's review if it exists, else generate it (used by the page + chat). */
+/** This week's review if it exists, else generate it (used by the page + cron). */
 export async function getOrGenerateWeeklyReview(): Promise<WeeklyReview> {
   const weekOf = todayStr();
   const [existing] = await db.select().from(weeklyTable).where(eq(weeklyTable.weekOf, weekOf)).limit(1);
   if (existing) return existing;
+  return generateWeeklyReview();
+}
+
+/** Force a FRESH review from current Compass state (used by chat asks, so it can
+ *  never replay a stale cached narrative after she's corrected things). */
+export async function regenerateWeeklyReview(): Promise<WeeklyReview> {
+  await db.delete(weeklyTable).where(eq(weeklyTable.weekOf, todayStr()));
   return generateWeeklyReview();
 }
 

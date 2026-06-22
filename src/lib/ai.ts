@@ -68,7 +68,7 @@ import {
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
-import { getOrGenerateWeeklyReview } from "./weekly-review";
+import { getOrGenerateWeeklyReview, regenerateWeeklyReview } from "./weekly-review";
 import { addGroceries, recategorizeGrocery, looksLikeGrocery } from "./grocery";
 import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime, nowLong, formatWhen } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
@@ -146,6 +146,8 @@ OPERATING CONTRACT — handle the request, then stop. Your job priority order is
 DEFAULT LENS — RUN OPERATIONS FIRST: for open-ended "what should I focus on / what's going on / what's on my plate / catch me up" moments, lead with what needs MANAGING: today's appointments & commitments, deadlines, blockers, open loops, decisions waiting, follow-ups, stalled projects, capacity conflicts. Assemble that from the real data — get_compass_overview (project/role status), search_crossroads (decisions awaiting), get_calendar_today (appointments), get_todoist_tasks (open + overdue + due-soon), answer_about (cross-entity). Prioritize with brief reasoning. Pattern recognition and accountability are SUPPORTING — fold them in only when they bear on the operational picture. The test: she should feel like she has a chief of staff running her operation, not a coach evaluating her life.
 
 EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers must come from Compass data, not from what you think you remember from the conversation. Before you answer ANY question that involves a date, a timeline, "when", "how long since", "last time", what happened/changed recently, activity history, a task's status (done? still open? due when?), an observation, a crossroad/decision and where it stands, attention history, or the state of any Compass entity — you MUST first call the relevant tool and answer from what it returns. The conversation is NOT a source of truth; it can be stale, partial, or about a different day. Concretely: chronology / "what changed / what did I do" → get_activity (or answer_about); "is X done / what's left / what's due" → get_todoist_tasks (or complete the relevant read); where a decision stands → get_crossroad; recent check-ins/dates → get_checkins; "how are things with X / what am I missing" → answer_about. Do NOT state a date, a count, a status, or a "you did/decided this on…" from memory — look it up. If a tool would tell you and you haven't called it, you don't actually know yet. When you're unsure or the data is thin, say "let me check" and check, or say plainly what you don't have — a quick "let me look" beats a confident wrong answer every time. Use the "Today is…" line below for the current date; never guess it.
+
+WEEKLY REVIEW / CHECK-IN: when she asks for her "weekly review", "weekly check-in", or "how was my week", you MUST call get_weekly_review and answer from what it returns — NEVER compose a weekly review from memory or earlier in the conversation. The tool regenerates live from Compass; anything you'd say from memory is stale and will contradict what she just told you. No exceptions.
 
 This applies to META / SYSTEM-PHRASED questions too — not just natural ones. Questions about what Compass contains or whether something is empty/blank MUST trigger a real query before you answer; never answer them from base context or assumption. Examples and routing: "is the crossroads system empty?" / "what crossroads exist?" → search_crossroads; "what do you know about Coach?" / "what did we store about Gifford & Co.?" → answer_about(that topic) (and get_memories if relevant); "what active projects exist?" / "what's in Compass?" → get_compass_overview. NEVER say a role, project, crossroad, or "the system" is empty/blank/unknown unless you JUST queried it and it genuinely came back empty. If a role or project has a description, mission, desired state, or outcome (these now appear in your context and in answer_about), use that content — do not call it blank.
 
@@ -449,7 +451,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "get_weekly_review",
-    description: "Get this week's Weekly Chief-of-Staff Review (comparative: what changed vs a week ago, where she's fooling herself, what deserves attention next week, what got better, the biggest open question). Use when she asks for her weekly review / 'how was my week' / 'what should I think about this week'. Generates it if not done yet.",
+    description: "Get the Weekly Chief-of-Staff Review (comparative: what changed vs a week ago, where she's fooling herself, what deserves attention, what got better, the biggest open question). You MUST call this whenever she asks for her weekly review / weekly check-in / 'how was my week' — NEVER write one from memory or conversation context; it regenerates live from Compass and is the only source of truth for the review.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -979,7 +981,9 @@ async function runTool(
   }
 
   if (name === "get_weekly_review") {
-    const r = await getOrGenerateWeeklyReview();
+    // A chat ask ALWAYS regenerates live from current Compass — never replay a
+    // cached narrative (which could contradict things she just corrected).
+    const r = await regenerateWeeklyReview();
     return j({ ok: true, weekOf: r.weekOf, throughline: r.throughline, review: r.narrative, biggestQuestion: r.biggestQuestion });
   }
 

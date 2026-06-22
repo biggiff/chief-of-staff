@@ -70,7 +70,7 @@ import {
 import { gatherAbout } from "./answer";
 import { getOrGenerateWeeklyReview } from "./weekly-review";
 import { addGroceries, recategorizeGrocery, looksLikeGrocery } from "./grocery";
-import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime } from "./dates";
+import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime, nowLong } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
 /**
@@ -251,7 +251,7 @@ async function buildContext(layer: Layer = "L1"): Promise<string> {
   const lines: string[] = [];
 
   // Ground every chronology answer in the real current date (her timezone).
-  lines.push(`Today is ${formatDate(todayStr())} (timezone ${appTimeZone()}). Use this for any "today / this week / how long since" reasoning — do not guess the date.`);
+  lines.push(`Right now it is ${nowLong()} (timezone ${appTimeZone()}). This is the AUTHORITATIVE current day-of-week, date, and time — use it directly. NEVER compute or guess the weekday yourself; it's given here. For "next Friday" etc., count forward from this weekday.`);
   lines.push("");
 
   // Active guided workflow (process memory) — survives chat refresh so a
@@ -1740,7 +1740,7 @@ async function leanGenerate(userText: string, history: HistoryMsg[], conversatio
       model: MODEL_LIGHT,
       max_tokens: 1024,
       thinking: { type: "disabled" },
-      system: `${LEAN_SYSTEM}\n\nToday is ${formatDate(todayStr())} (${appTimeZone()}).${proof}`,
+      system: `${LEAN_SYSTEM}\n\nRight now it is ${nowLong()} (${appTimeZone()}). Authoritative day/date/time — never guess the weekday.${proof}`,
       tools,
       messages,
     });

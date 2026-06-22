@@ -10,6 +10,24 @@ export function appTimeZone(): string {
   return process.env.APP_TZ || "UTC";
 }
 
+/**
+ * The current weekday + date + time in the user's timezone, computed by code so
+ * the model never has to derive (and mis-derive) the day of week. Fresh per call.
+ * e.g. "Saturday, June 21, 2026, 10:32 PM MST".
+ */
+export function nowLong(): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: appTimeZone(),
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date());
+}
+
 /** Today's date as YYYY-MM-DD in the user's timezone. */
 export function todayStr(): string {
   // en-CA formats as YYYY-MM-DD.

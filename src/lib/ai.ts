@@ -70,7 +70,7 @@ import {
 import { gatherAbout } from "./answer";
 import { getOrGenerateWeeklyReview } from "./weekly-review";
 import { addGroceries, recategorizeGrocery, looksLikeGrocery } from "./grocery";
-import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime, nowLong } from "./dates";
+import { formatDate, formatTime, startEndOfToday, todayStr, appTimeZone, parseOccurredAt, parseLocalDateTime, nowLong, formatWhen } from "./dates";
 import type { ChiefResponse } from "./chat-engine";
 
 /**
@@ -251,7 +251,8 @@ async function buildContext(layer: Layer = "L1"): Promise<string> {
   const lines: string[] = [];
 
   // Ground every chronology answer in the real current date (her timezone).
-  lines.push(`Right now it is ${nowLong()} (timezone ${appTimeZone()}). This is the AUTHORITATIVE current day-of-week, date, and time — use it directly. NEVER compute or guess the weekday yourself; it's given here. For "next Friday" etc., count forward from this weekday.`);
+  lines.push(`Right now it is ${nowLong()} (timezone ${appTimeZone()}). This is the AUTHORITATIVE current day-of-week, date, and time — use it directly.`);
+  lines.push(`WEEKDAY RULE (hard): NEVER state a day-of-week you worked out yourself — you get them wrong. Use ONLY the weekday given above for "today", and the weekday baked into tool results (reminders/tasks come back as "Fri, Jun 26, 2026 …" — quote that weekday verbatim). If you need a date's weekday and a tool didn't give it, call the tool (e.g. list_reminders) rather than computing it. Never contradict a weekday a tool returned.`);
   lines.push("");
 
   // Active guided workflow (process memory) — survives chat refresh so a
@@ -1046,7 +1047,7 @@ async function runTool(
     if (when.getTime() < Date.now() - 60_000) return j({ ok: false, error: "That time is in the past — pick a future time." });
     const repeat = input.repeat as "daily" | "weekdays" | "weekly" | "monthly" | undefined;
     const { summary } = await createReminder({ text: input.text as string, remindAt: when, recurrence: repeat ?? null, conversationId });
-    return j({ ok: true, summary, at: `${formatDate(when)} ${formatTime(when)}`, repeats: repeat ?? null });
+    return j({ ok: true, summary, at: formatWhen(when), repeats: repeat ?? null });
   }
 
   if (name === "list_reminders") {

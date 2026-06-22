@@ -28,6 +28,25 @@ export function nowLong(): string {
   }).format(new Date());
 }
 
+/**
+ * A date+time stamped WITH its weekday, computed by code so the model never has
+ * to derive a day-of-week (which it gets wrong). e.g. "Fri, Jun 26, 2026, 2:00 PM".
+ * Use this everywhere a date is shown to Scout or the user.
+ */
+export function formatWhen(d: Date | string): string {
+  const date = typeof d === "string" ? new Date(d) : d;
+  if (Number.isNaN(date.getTime())) return String(d);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: appTimeZone(),
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
 /** Today's date as YYYY-MM-DD in the user's timezone. */
 export function todayStr(): string {
   // en-CA formats as YYYY-MM-DD.

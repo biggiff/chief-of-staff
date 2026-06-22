@@ -33,7 +33,7 @@ import {
   deleteTodoistTask,
   findActiveTodoistTask,
 } from "./integrations/todoist";
-import { formatDate, formatTime } from "./dates";
+import { formatDate, formatTime, formatWhen } from "./dates";
 
 /**
  * Compass operator layer.
@@ -1338,7 +1338,7 @@ export async function createReminder(input: {
     .values({ text: input.text.slice(0, 1000), remindAt: input.remindAt, recurrence: input.recurrence ?? null, source: "chat" })
     .returning();
   const repeat = input.recurrence ? `, repeating ${input.recurrence}` : "";
-  const summary = `Set a reminder for ${formatDate(input.remindAt)} ${formatTime(input.remindAt)}${repeat}: "${input.text.slice(0, 80)}"`;
+  const summary = `Set a reminder for ${formatWhen(input.remindAt)}${repeat}: "${input.text.slice(0, 80)}"`;
   await logActivity({
     actionKind: "reminder_create",
     summary,
@@ -1358,7 +1358,7 @@ export async function listReminders(limit = 20) {
     .where(eq(remindersTable.status, "pending"))
     .orderBy(remindersTable.remindAt)
     .limit(limit);
-  return rows.map((r) => ({ id: r.id, text: r.text, at: `${formatDate(r.remindAt)} ${formatTime(r.remindAt)}`, repeats: r.recurrence ?? null }));
+  return rows.map((r) => ({ id: r.id, text: r.text, at: formatWhen(r.remindAt), repeats: r.recurrence ?? null }));
 }
 
 /** After a recurring reminder fires, advance it to its next occurrence (stays pending). */

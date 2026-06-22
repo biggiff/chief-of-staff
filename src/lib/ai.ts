@@ -61,6 +61,7 @@ import {
   createReminder,
   listReminders,
   cancelReminder,
+  confirmReminder,
   createKnowledgeNote,
   searchKnowledge,
   proofModeOn,
@@ -148,6 +149,8 @@ DEFAULT LENS — RUN OPERATIONS FIRST: for open-ended "what should I focus on / 
 EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers must come from Compass data, not from what you think you remember from the conversation. Before you answer ANY question that involves a date, a timeline, "when", "how long since", "last time", what happened/changed recently, activity history, a task's status (done? still open? due when?), an observation, a crossroad/decision and where it stands, attention history, or the state of any Compass entity — you MUST first call the relevant tool and answer from what it returns. The conversation is NOT a source of truth; it can be stale, partial, or about a different day. Concretely: chronology / "what changed / what did I do" → get_activity (or answer_about); "is X done / what's left / what's due" → get_todoist_tasks (or complete the relevant read); where a decision stands → get_crossroad; recent check-ins/dates → get_checkins; "how are things with X / what am I missing" → answer_about. Do NOT state a date, a count, a status, or a "you did/decided this on…" from memory — look it up. If a tool would tell you and you haven't called it, you don't actually know yet. When you're unsure or the data is thin, say "let me check" and check, or say plainly what you don't have — a quick "let me look" beats a confident wrong answer every time. Use the "Today is…" line below for the current date; never guess it.
 
 WEEKLY REVIEW / CHECK-IN: when she asks for her "weekly review", "weekly check-in", or "how was my week", you MUST call get_weekly_review and answer from what it returns — NEVER compose a weekly review from memory or earlier in the conversation. The tool regenerates live from Compass; anything you'd say from memory is stale and will contradict what she just told you. No exceptions.
+
+REMINDER FOLLOW-UPS (accountability loop): (a) When she sets a reminder and says anything like "check back", "follow up", "make sure I do it", "hold me accountable", or "if I don't/haven't" → set follow_up=true on schedule_reminder. For a one-shot that's clearly a real commitment she's been avoiding, OFFER it ("want me to check back if you haven't?") and set it if she agrees. (b) When she says she DID something ("done", "did it", "called them", "taken care of") — especially replying to a check-back — call confirm_reminder to close the loop. "Drop it / never mind / let it go" → cancel_reminder. Don't confuse the two: confirm = she did it; cancel = she's abandoning it.
 
 This applies to META / SYSTEM-PHRASED questions too — not just natural ones. Questions about what Compass contains or whether something is empty/blank MUST trigger a real query before you answer; never answer them from base context or assumption. Examples and routing: "is the crossroads system empty?" / "what crossroads exist?" → search_crossroads; "what do you know about Coach?" / "what did we store about Gifford & Co.?" → answer_about(that topic) (and get_memories if relevant); "what active projects exist?" / "what's in Compass?" → get_compass_overview. NEVER say a role, project, crossroad, or "the system" is empty/blank/unknown unless you JUST queried it and it genuinely came back empty. If a role or project has a description, mission, desired state, or outcome (these now appear in your context and in answer_about), use that content — do not call it blank.
 
@@ -596,13 +599,15 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "schedule_reminder",
     description:
-      "Schedule a timed nudge to TEXT her at a wall-clock time — 'remind me at 3pm to call the dentist', 'text me tomorrow at 9', 'ping me in 2 hours', AND recurring ones: 'every morning at 7', 'every weekday at 5pm', 'every Monday at 9', 'on the 1st of each month'. Scout sends it via Telegram. Compute the FIRST occurrence's absolute local date+time from her phrasing + TODAY'S date (in your context) and pass it as `at` ('YYYY-MM-DDTHH:mm', 24h, her timezone). For recurring, also set `repeat`: daily | weekdays (Mon–Fri) | weekly (same weekday as `at`) | monthly (same day-of-month as `at`). Confirm the time + cadence back in one line. (Time-based nudges only; use create_task for list items.)",
+      "Schedule a timed nudge to TEXT her at a wall-clock time — 'remind me at 3pm to call the dentist', 'text me tomorrow at 9', 'ping me in 2 hours', AND recurring ones: 'every morning at 7', 'every weekday at 5pm', 'every Monday at 9', 'on the 1st of each month'. Scout sends it via Telegram. Compute the FIRST occurrence's absolute local date+time from her phrasing + TODAY'S date (in your context) and pass it as `at` ('YYYY-MM-DDTHH:mm', 24h, her timezone). For recurring, set `repeat`: daily | weekdays | weekly | monthly. FOLLOW-UP (accountability loop): set follow_up=true when she asks you to 'check back / make sure I did it / follow up', OR — for a one-shot that sounds like a real commitment (a call she's been putting off, a deadline) — OFFER it: 'want me to check back if you haven't done it?' and set it only if she says yes. follow_up_after_hours = how long after to check (default 4). It checks back at most twice, then stops and lets the weekly review flag it. Don't add follow_up to recurring reminders or trivial nudges. Confirm time + cadence in one line.",
     input_schema: {
       type: "object",
       properties: {
         text: { type: "string", description: "What the reminder should say to her (e.g. 'Call the dentist')." },
         at: { type: "string", description: "First occurrence, absolute local time 24h: 'YYYY-MM-DDTHH:mm' in her timezone." },
         repeat: { type: "string", enum: ["daily", "weekdays", "weekly", "monthly"], description: "Omit for one-shot. 'weekly' repeats on the same weekday as `at`; 'monthly' on the same day-of-month." },
+        follow_up: { type: "boolean", description: "True = check back if she hasn't confirmed it's done (one-shot only). Only when she wants it or agrees to your offer." },
+        follow_up_after_hours: { type: "number", description: "Hours after the reminder to check back (default 4)." },
       },
       required: ["text", "at"],
     },
@@ -614,7 +619,12 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "cancel_reminder",
-    description: "Cancel a pending scheduled reminder. Pass her wording as query to fuzzy-match it.",
+    description: "Cancel/drop a pending reminder — use when she says 'drop it', 'never mind', 'let it go', 'stop reminding me'. Pass her wording as query to fuzzy-match. (This is NOT 'I did it' — for that use confirm_reminder.)",
+    input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
+    name: "confirm_reminder",
+    description: "Close an accountability loop — she confirmed she DID the thing ('done', 'did it', 'yep called them', 'taken care of'). Marks it done so the follow-up never asks again. Pass her wording / the thing as query. Use this (not cancel) whenever she indicates completion, especially in reply to a check-back.",
     input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
   },
   {
@@ -1050,8 +1060,9 @@ async function runTool(
     if (!when) return j({ ok: false, error: "Couldn't parse that time. Pass 'at' as 'YYYY-MM-DDTHH:mm' local." });
     if (when.getTime() < Date.now() - 60_000) return j({ ok: false, error: "That time is in the past — pick a future time." });
     const repeat = input.repeat as "daily" | "weekdays" | "weekly" | "monthly" | undefined;
-    const { summary } = await createReminder({ text: input.text as string, remindAt: when, recurrence: repeat ?? null, conversationId });
-    return j({ ok: true, summary, at: formatWhen(when), repeats: repeat ?? null });
+    const followUpAfterMinutes = input.follow_up === true ? Math.round(((input.follow_up_after_hours as number) ?? 4) * 60) : null;
+    const { summary } = await createReminder({ text: input.text as string, remindAt: when, recurrence: repeat ?? null, followUpAfterMinutes, conversationId });
+    return j({ ok: true, summary, at: formatWhen(when), repeats: repeat ?? null, followUp: !!followUpAfterMinutes });
   }
 
   if (name === "list_reminders") {
@@ -1060,6 +1071,10 @@ async function runTool(
 
   if (name === "cancel_reminder") {
     return j(await cancelReminder(input.query as string, conversationId));
+  }
+
+  if (name === "confirm_reminder") {
+    return j(await confirmReminder(input.query as string, conversationId));
   }
 
   if (name === "set_proof_mode") {
@@ -1106,6 +1121,10 @@ async function runTool(
 
   if (name === "complete_task") {
     const query = input.query as string;
+    // Cross-cover: if this matches a reminder we're actively checking back on,
+    // "done X" means close that loop — regardless of which tool Scout picked.
+    const loop = await confirmReminder(query, conversationId, true);
+    if (loop.ok) return j(loop);
     const { best, confident, candidates } = await findOpenTask(query);
     // Mirror has a confident match → close it.
     if (best && confident) {

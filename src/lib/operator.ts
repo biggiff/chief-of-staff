@@ -1331,14 +1331,25 @@ export async function createReminder(input: {
   text: string;
   remindAt: Date;
   recurrence?: "daily" | "weekdays" | "weekly" | "monthly" | null;
+  followUpAfterMinutes?: number | null; // if set, Scout checks back until confirmed (max 2x)
   conversationId?: string | null;
 }) {
+  // Follow-up only on one-shot reminders (recurring ones repeat anyway).
+  const followUp = !input.recurrence && input.followUpAfterMinutes ? input.followUpAfterMinutes : null;
   const [row] = await db
     .insert(remindersTable)
-    .values({ text: input.text.slice(0, 1000), remindAt: input.remindAt, recurrence: input.recurrence ?? null, source: "chat" })
+    .values({
+      text: input.text.slice(0, 1000),
+      remindAt: input.remindAt,
+      recurrence: input.recurrence ?? null,
+      followUpAfterMinutes: followUp,
+      followUpsLeft: followUp ? 2 : 0,
+      source: "chat",
+    })
     .returning();
   const repeat = input.recurrence ? `, repeating ${input.recurrence}` : "";
-  const summary = `Set a reminder for ${formatWhen(input.remindAt)}${repeat}: "${input.text.slice(0, 80)}"`;
+  const fu = followUp ? `, and I'll check back if you haven't done it` : "";
+  const summary = `Set a reminder for ${formatWhen(input.remindAt)}${repeat}${fu}: "${input.text.slice(0, 80)}"`;
   await logActivity({
     actionKind: "reminder_create",
     summary,
@@ -1364,6 +1375,48 @@ export async function listReminders(limit = 20) {
 /** After a recurring reminder fires, advance it to its next occurrence (stays pending). */
 export async function rearmReminder(id: string, nextAt: Date) {
   await db.update(remindersTable).set({ remindAt: nextAt, sentAt: new Date() }).where(eq(remindersTable.id, id));
+}
+
+/** Close an accountability loop — she confirmed she did it. Matches an open
+ *  (pending) reminder by text, preferring ones currently awaiting confirmation. */
+export async function confirmReminder(query: string, conversationId?: string | null, requireAwaiting = false) {
+  let rows = await db.select().from(remindersTable).where(eq(remindersTable.status, "pending"));
+  if (requireAwaiting) rows = rows.filter((r) => r.awaitingConfirm);
+  const q = query.toLowerCase().trim();
+  const score = (r: typeof rows[number]) => {
+    const t = r.text.toLowerCase();
+    let s = t === q ? 100 : t.includes(q) || q.includes(t) ? 80 : q.split(/\W+/).filter((w) => w.length >= 4 && t.includes(w)).length * 20;
+    if (r.awaitingConfirm) s += 25; // prefer the one we just checked in on
+    return s;
+  };
+  const best = rows.map((r) => ({ r, s: score(r) })).sort((a, b) => b.s - a.s)[0];
+  if (!best || best.s < 30) return { ok: false, message: `No open reminder matching "${query}".` };
+  await db.update(remindersTable).set({ status: "done", confirmedAt: new Date() }).where(eq(remindersTable.id, best.r.id));
+  const summary = `Marked done (loop closed): "${best.r.text.slice(0, 80)}"`;
+  await logActivity({ actionKind: "reminder_confirm", summary, entityTable: "reminders", entityId: best.r.id, undoPayload: { id: best.r.id, prev: best.r.status }, conversationId });
+  return { ok: true, message: summary };
+}
+
+/** First fire of a follow-up reminder: enter "awaiting confirmation" + schedule the first check-back. */
+export async function enterFollowUp(id: string, nextCheckAt: Date) {
+  await db.update(remindersTable).set({ awaitingConfirm: true, remindAt: nextCheckAt, sentAt: new Date() }).where(eq(remindersTable.id, id));
+}
+
+/** A check-back just fired. Decrement; if that was the last one, mark it slipped (give up, no more pings). */
+export async function recordCheckBack(id: string, followUpsLeft: number, nextCheckAt: Date) {
+  if (followUpsLeft <= 1) {
+    await db.update(remindersTable).set({ status: "slipped", followUpsLeft: 0, sentAt: new Date() }).where(eq(remindersTable.id, id));
+  } else {
+    await db.update(remindersTable).set({ followUpsLeft: followUpsLeft - 1, remindAt: nextCheckAt, sentAt: new Date() }).where(eq(remindersTable.id, id));
+  }
+}
+
+/** Reminders that slipped this week (asked twice, never confirmed) — for the weekly review. */
+export async function slippedRemindersSince(since: Date) {
+  const rows = await db.select().from(remindersTable).where(eq(remindersTable.status, "slipped"));
+  return rows
+    .filter((r) => r.sentAt && r.sentAt >= since)
+    .map((r) => ({ text: r.text, lastNudged: r.sentAt ? formatWhen(r.sentAt) : null }));
 }
 
 export async function cancelReminder(query: string, conversationId?: string | null) {
@@ -1518,6 +1571,9 @@ export async function undoActivity(id: string): Promise<{ ok: boolean; message: 
         break;
       case "reminder_cancel":
         await db.update(remindersTable).set({ status: "pending" }).where(eq(remindersTable.id, p.id as string));
+        break;
+      case "reminder_confirm":
+        await db.update(remindersTable).set({ status: ((p.prev as string) ?? "pending") as never, confirmedAt: null }).where(eq(remindersTable.id, p.id as string));
         break;
       case "workflow_start":
         await db.delete(workflowStatesTable).where(eq(workflowStatesTable.id, p.id as string));

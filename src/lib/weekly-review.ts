@@ -192,6 +192,20 @@ async function gatherWeek(): Promise<string> {
     /* calendar optional */
   }
 
+  // Reminders that slipped — Scout checked back twice and she never confirmed.
+  // Strong, honest signal for "where you're fooling yourself."
+  try {
+    const { slippedRemindersSince } = await import("./operator");
+    const slipped = await slippedRemindersSince(start);
+    if (slipped.length) {
+      lines.push(`SLIPPED REMINDERS this week (asked twice, never confirmed done — real avoidance signal, surface it):`);
+      slipped.forEach((s) => lines.push(`  - "${s.text}"${s.lastNudged ? ` (last nudged ${s.lastNudged})` : ""}`));
+      lines.push("");
+    }
+  } catch {
+    /* optional */
+  }
+
   return lines.join("\n");
 }
 

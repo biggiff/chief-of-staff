@@ -6,6 +6,7 @@ import {
   timestamp,
   date,
   jsonb,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -49,7 +50,7 @@ export type InsightStatus = "open" | "surfaced" | "dismissed" | "resolved";
 export type MemoryType = "identity" | "learned_pattern" | "temporary_context";
 export type MemoryStatus = "active" | "archived" | "superseded";
 export type WorkflowStatus = "active" | "paused" | "complete";
-export type ReminderStatus = "pending" | "sent" | "canceled";
+export type ReminderStatus = "pending" | "sent" | "canceled" | "done" | "slipped";
 export type KnowledgeKind = "drill" | "process" | "idea" | "system" | "reference" | "note";
 export type Recurrence = "daily" | "weekdays" | "weekly" | "monthly";
 
@@ -423,8 +424,15 @@ export const reminders = pgTable("reminders", {
   // null = one-shot. Otherwise repeats: daily | weekdays | weekly | monthly.
   // A recurring reminder stays "pending" and remindAt advances after each fire.
   recurrence: text("recurrence").$type<Recurrence>(),
-  status: text("status").$type<ReminderStatus>().notNull().default("pending"), // pending | sent | canceled
+  status: text("status").$type<ReminderStatus>().notNull().default("pending"), // pending | sent | canceled | done | slipped
   source: text("source").notNull().default("chat"),
+  // Accountability loop: after the reminder fires, if not confirmed done, check
+  // back every followUpAfterMinutes, up to followUpsLeft times, then give up
+  // (status "slipped" → surfaced in the weekly review). Null = no follow-up.
+  followUpAfterMinutes: integer("follow_up_after_minutes"),
+  followUpsLeft: integer("follow_ups_left").notNull().default(0),
+  awaitingConfirm: boolean("awaiting_confirm").notNull().default(false),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }), // last time it fired
 });

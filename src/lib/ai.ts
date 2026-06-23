@@ -767,6 +767,11 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { count: { type: "number" } } },
   },
   {
+    name: "set_step_goal",
+    description: "Change her daily step goal (used by the throughout-the-day step pace nudges). e.g. 'set my step goal to 10000'.",
+    input_schema: { type: "object", properties: { goal: { type: "number" } }, required: ["goal"] },
+  },
+  {
     name: "get_oura",
     description: "Read her Oura ring data — sleep, readiness, and activity scores (and sleep hours, steps), latest + recent trend. Use for 'how did I sleep', 'what's my readiness', 'how am I recovering', or to ground anything about her body/energy/Health in real data instead of guessing. Default ~7 days.",
     input_schema: { type: "object", properties: { days: { type: "number" } } },
@@ -1052,6 +1057,12 @@ async function runTool(
       conversationId,
     });
     return j({ ok: true, summary });
+  }
+
+  if (name === "set_step_goal") {
+    const goal = Math.max(1000, Math.round(input.goal as number));
+    await setSetting("step_goal", String(goal));
+    return j({ ok: true, summary: `Daily step goal set to ${goal.toLocaleString()}. I'll pace your nudges to that.` });
   }
 
   if (name === "get_oura") {

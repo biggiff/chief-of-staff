@@ -26,6 +26,15 @@ async function fetchCollection(ep: string, start: string, end: string): Promise<
   return j.data ?? [];
 }
 
+/** Today's step count so far (updates intraday as the ring syncs). */
+export async function getTodaySteps(): Promise<number | null> {
+  if (!ouraEnabled()) return null;
+  const today = ymd(0);
+  const rows = await fetchCollection("daily_activity", today, today).catch(() => []);
+  const todayRow = rows.find((r) => String(r.day) === today) ?? rows[rows.length - 1];
+  return todayRow ? ((todayRow.steps as number) ?? null) : null;
+}
+
 export type OuraDay = { date: string; readiness: number | null; sleep: number | null; sleepHours: number | null; activity: number | null; steps: number | null };
 
 /** Recent sleep/readiness/activity, merged by day (newest last). */

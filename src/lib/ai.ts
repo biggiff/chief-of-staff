@@ -762,6 +762,11 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { limit: { type: "number" } } },
   },
   {
+    name: "get_workouts",
+    description: "Read her logged strength workouts from Hevy — recent sessions with exercises and sets (weight in lb + reps), and her saved routines. Use for 'what did I lift', 'how was my last workout', 'what's my training been this week', 'what did I bench last time'. Default ~10 recent workouts.",
+    input_schema: { type: "object", properties: { count: { type: "number" } } },
+  },
+  {
     name: "get_oura",
     description: "Read her Oura ring data — sleep, readiness, and activity scores (and sleep hours, steps), latest + recent trend. Use for 'how did I sleep', 'what's my readiness', 'how am I recovering', or to ground anything about her body/energy/Health in real data instead of guessing. Default ~7 days.",
     input_schema: { type: "object", properties: { days: { type: "number" } } },
@@ -1053,6 +1058,16 @@ async function runTool(
     const { getOuraData, ouraEnabled } = await import("./integrations/oura");
     if (!ouraEnabled()) return j({ ok: false, error: "Oura isn't connected." });
     return j({ ok: true, oura: await getOuraData((input.days as number) ?? 7) });
+  }
+
+  if (name === "get_workouts") {
+    const { getRecentWorkouts, getRoutines, hevyEnabled } = await import("./integrations/hevy");
+    if (!hevyEnabled()) return j({ ok: false, error: "Hevy isn't connected." });
+    const [workouts, routines] = await Promise.all([
+      getRecentWorkouts((input.count as number) ?? 10).catch(() => []),
+      getRoutines().catch(() => []),
+    ]);
+    return j({ ok: true, workouts, routines, note: workouts.length === 0 ? "No workouts logged in Hevy yet." : undefined });
   }
 
   if (name === "get_attention_history") {

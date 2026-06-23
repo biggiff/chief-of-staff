@@ -1069,10 +1069,26 @@ async function runTool(
     const { getOuraData, getTodaySteps, ouraEnabled } = await import("./integrations/oura");
     if (!ouraEnabled()) return j({ ok: false, error: "Oura isn't connected." });
     const [oura, todaySteps] = await Promise.all([getOuraData((input.days as number) ?? 7), getTodaySteps()]);
+
+    // Stamp every day with an explicit relative label computed in CODE so Scout
+    // never has to infer which date is "today" — around midnight it guessed wrong
+    // (called yesterday "today"). The model reports these labels; it never derives them.
+    const today = todayStr();
+    const relLabel = (ymd: string): string => {
+      const diff = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${ymd}T00:00:00Z`)) / 86_400_000);
+      if (Number.isNaN(diff)) return ymd;
+      if (diff === 0) return "today";
+      if (diff === 1) return "yesterday";
+      if (diff > 1) return `${diff} days ago`;
+      return `in ${-diff} day(s)`;
+    };
+    const labeledTrend = (oura?.trend ?? []).map((d) => ({ ...d, label: relLabel(d.date) }));
+    const labeledOura = oura ? { latest: labeledTrend[labeledTrend.length - 1] ?? null, trend: labeledTrend } : null;
+
     const stepsNote = todaySteps == null
-      ? "No activity/steps synced for TODAY yet. IMPORTANT: Oura activity updates THROUGHOUT THE DAY whenever the ring syncs (phone nearby / Oura app opened) — it does NOT only update overnight (that's sleep/readiness). So say today's count isn't synced yet and suggest opening the Oura app; do NOT claim steps only come in overnight."
-      : null;
-    return j({ ok: true, oura, todaySteps, stepsNote });
+      ? `Today is ${today}. Today's steps have NOT synced to Oura's cloud yet (the ring only uploads when the Oura app is opened in the foreground). Tell her today's (${today}) count isn't in yet and to open the Oura app to sync. CRITICAL: do NOT relabel an earlier day (e.g. the latest day in the trend) as "today" — use the per-day "label" field, which is computed correctly. Do NOT say steps only come in overnight.`
+      : `Today is ${today}. Today's (${today}) steps so far: ${todaySteps}. Use each day's "label" field for today/yesterday — do not infer dates yourself.`;
+    return j({ ok: true, today, oura: labeledOura, todaySteps, stepsNote });
   }
 
   if (name === "get_workouts") {

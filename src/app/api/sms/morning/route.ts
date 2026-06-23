@@ -41,7 +41,8 @@ async function run(req: NextRequest) {
     .where(and(eq(tasksTable.status, "open"), lte(tasksTable.dueDate, end)));
   const dueTitles = due.slice(0, 4).map((t) => t.title);
 
-  const parts: string[] = ["☀️ Morning."];
+  // Build the brief as clean lines/sections (Telegram renders \n and • bullets).
+  const lines: string[] = ["☀️ Good morning"];
 
   // Body readiness from Oura, if connected — leads the brief so she knows the kind of day.
   try {
@@ -51,22 +52,28 @@ async function run(req: NextRequest) {
       if (o?.readiness != null) {
         const sleep = o.sleepHours != null ? `, slept ${o.sleepHours}h` : "";
         const band = o.readiness >= 85 ? "well-recovered — good day to push" : o.readiness >= 70 ? "decent recovery" : "running low — take it easy";
-        parts.push(`Readiness ${o.readiness}${sleep} — ${band}.`);
+        lines.push("", `💪 Readiness ${o.readiness}${sleep} — ${band}.`);
       }
     }
   } catch (err) {
     console.error("morning oura failed", err);
   }
 
-  parts.push(events.length ? `Today: ${events.slice(0, 5).join(", ")}.` : "Nothing on the calendar today.");
-  if (dueTitles.length) {
-    parts.push(`Due: ${dueTitles.join(", ")}${due.length > 4 ? `, +${due.length - 4} more` : ""}.`);
-  } else {
-    parts.push("Nothing due — clear plate.");
-  }
-  parts.push("Text me to add or knock anything out.");
+  lines.push("", "📅 Today");
+  if (events.length) for (const e of events.slice(0, 6)) lines.push(`• ${e}`);
+  else lines.push("• Nothing scheduled");
 
-  const res = await notifyOwner(parts.join(" "));
+  lines.push("", "✅ Due");
+  if (dueTitles.length) {
+    for (const t of dueTitles) lines.push(`• ${t}`);
+    if (due.length > 4) lines.push(`• +${due.length - 4} more`);
+  } else {
+    lines.push("• Nothing due — clear plate");
+  }
+
+  lines.push("", "Text me to add or knock anything out.");
+
+  const res = await notifyOwner(lines.join("\n"));
 
   // Google-token health check — alert ONCE per outage (not every morning), and
   // confirm once when it recovers. Turns a silent calendar failure into a nudge.

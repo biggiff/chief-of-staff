@@ -34,10 +34,22 @@ async function run(req: NextRequest) {
   if (!cp) return NextResponse.json({ ok: true, skipped: "before first checkpoint" });
 
   const steps = await getTodaySteps();
-  if (steps == null) return NextResponse.json({ ok: true, skipped: "no step data yet" });
+  const today = todayStr();
+
+  // Stale data: Oura's cloud has no steps for today, meaning the ring never synced
+  // (Oura only uploads on a foreground app-open). Nudge ONCE per checkpoint so she
+  // knows her auto-sync shortcut didn't fire — this is the canary, not noise.
+  if (steps == null) {
+    const staleKey = `steps_stale_${today}`;
+    const staleAlready = ((await getSetting(staleKey)) || "").split(",").filter(Boolean);
+    if (!staleAlready.includes(String(cp.hour))) {
+      await notifyOwner(`👟 I can't see today's steps at ${cp.label} — your ring hasn't synced to Oura yet. If your auto-sync shortcut ran, give it a moment; otherwise open the Oura app once and I'll catch up.`);
+      await setSetting(staleKey, [...staleAlready, String(cp.hour)].join(","));
+    }
+    return NextResponse.json({ ok: true, steps: null, staleNudged: true });
+  }
 
   const target = Math.round((goal * cp.frac) / 100) * 100;
-  const today = todayStr();
   const nudgedKey = `steps_nudged_${today}`;
   const already = ((await getSetting(nudgedKey)) || "").split(",").filter(Boolean);
 

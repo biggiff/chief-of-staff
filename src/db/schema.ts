@@ -430,6 +430,9 @@ export const reminders = pgTable("reminders", {
   // back every followUpAfterMinutes, up to followUpsLeft times, then give up
   // (status "slipped" → surfaced in the weekly review). Null = no follow-up.
   followUpAfterMinutes: integer("follow_up_after_minutes"),
+  // Optional absolute time for the FIRST check-back ("check back at 5pm"); after
+  // that it falls back to followUpAfterMinutes (default next-day) for the 2nd.
+  followUpFirstAt: timestamp("follow_up_first_at", { withTimezone: true }),
   followUpsLeft: integer("follow_ups_left").notNull().default(0),
   awaitingConfirm: boolean("awaiting_confirm").notNull().default(false),
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),

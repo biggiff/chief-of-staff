@@ -599,7 +599,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "schedule_reminder",
     description:
-      "Schedule a timed nudge to TEXT her at a wall-clock time — 'remind me at 3pm to call the dentist', 'text me tomorrow at 9', 'ping me in 2 hours', AND recurring ones: 'every morning at 7', 'every weekday at 5pm', 'every Monday at 9', 'on the 1st of each month'. Scout sends it via Telegram. Compute the FIRST occurrence's absolute local date+time from her phrasing + TODAY'S date (in your context) and pass it as `at` ('YYYY-MM-DDTHH:mm', 24h, her timezone). For recurring, set `repeat`: daily | weekdays | weekly | monthly. FOLLOW-UP (accountability loop): set follow_up=true when she asks you to 'check back / make sure I did it / follow up', OR — for a one-shot that sounds like a real commitment (a call she's been putting off, a deadline) — OFFER it: 'want me to check back if you haven't done it?' and set it only if she says yes. follow_up_after_hours = how long after to check (default 4). It checks back at most twice, then stops and lets the weekly review flag it. Don't add follow_up to recurring reminders or trivial nudges. Confirm time + cadence in one line.",
+      "Schedule a timed nudge to TEXT her at a wall-clock time — 'remind me at 3pm to call the dentist', 'text me tomorrow at 9', 'ping me in 2 hours', AND recurring ones: 'every morning at 7', 'every weekday at 5pm', 'every Monday at 9', 'on the 1st of each month'. Scout sends it via Telegram. Compute the FIRST occurrence's absolute local date+time from her phrasing + TODAY'S date (in your context) and pass it as `at` ('YYYY-MM-DDTHH:mm', 24h, her timezone). For recurring, set `repeat`: daily | weekdays | weekly | monthly. FOLLOW-UP (accountability loop): set follow_up=true when she asks you to 'check back / make sure I did it / follow up', OR — for a one-shot that sounds like a real commitment (a call she's been putting off, a deadline) — OFFER it: 'want me to check back if you haven't done it?' and set it only if she says yes. For the check-back timing: follow_up_after_hours = RELATIVE ('check back in 2 hours', default 4); follow_up_at = ABSOLUTE clock time ('check back at 5pm', as 'YYYY-MM-DDTHH:mm', must be after `at`). It checks back at most twice, then stops and lets the weekly review flag it. Don't add follow_up to recurring reminders or trivial nudges. Confirm time + cadence in one line.",
     input_schema: {
       type: "object",
       properties: {
@@ -607,7 +607,8 @@ const TOOLS: Anthropic.Tool[] = [
         at: { type: "string", description: "First occurrence, absolute local time 24h: 'YYYY-MM-DDTHH:mm' in her timezone." },
         repeat: { type: "string", enum: ["daily", "weekdays", "weekly", "monthly"], description: "Omit for one-shot. 'weekly' repeats on the same weekday as `at`; 'monthly' on the same day-of-month." },
         follow_up: { type: "boolean", description: "True = check back if she hasn't confirmed it's done (one-shot only). Only when she wants it or agrees to your offer." },
-        follow_up_after_hours: { type: "number", description: "Hours after the reminder to check back (default 4)." },
+        follow_up_after_hours: { type: "number", description: "RELATIVE check-back: hours after the reminder fires (default 4). e.g. 'check back in 2 hours'." },
+        follow_up_at: { type: "string", description: "ABSOLUTE check-back time: 'YYYY-MM-DDTHH:mm' local, for 'check back at 5pm'. Must be after `at`. The 2nd check-back defaults to the next day at the same time." },
       },
       required: ["text", "at"],
     },
@@ -1060,9 +1061,15 @@ async function runTool(
     if (!when) return j({ ok: false, error: "Couldn't parse that time. Pass 'at' as 'YYYY-MM-DDTHH:mm' local." });
     if (when.getTime() < Date.now() - 60_000) return j({ ok: false, error: "That time is in the past — pick a future time." });
     const repeat = input.repeat as "daily" | "weekdays" | "weekly" | "monthly" | undefined;
-    const followUpAfterMinutes = input.follow_up === true ? Math.round(((input.follow_up_after_hours as number) ?? 4) * 60) : null;
-    const { summary } = await createReminder({ text: input.text as string, remindAt: when, recurrence: repeat ?? null, followUpAfterMinutes, conversationId });
-    return j({ ok: true, summary, at: formatWhen(when), repeats: repeat ?? null, followUp: !!followUpAfterMinutes });
+    // Absolute check-back time ("check back at 5pm") wins over relative hours.
+    const followUpFirstAt = parseLocalDateTime(input.follow_up_at as string | undefined);
+    if (followUpFirstAt && followUpFirstAt.getTime() <= when.getTime()) {
+      return j({ ok: false, error: "The check-back time must be AFTER the reminder time." });
+    }
+    const wantsFollowUp = input.follow_up === true || !!followUpFirstAt;
+    const followUpAfterMinutes = wantsFollowUp ? Math.round(((input.follow_up_after_hours as number) ?? (followUpFirstAt ? 24 : 4)) * 60) : null;
+    const { summary } = await createReminder({ text: input.text as string, remindAt: when, recurrence: repeat ?? null, followUpAfterMinutes, followUpFirstAt, conversationId });
+    return j({ ok: true, summary, at: formatWhen(when), repeats: repeat ?? null, followUp: wantsFollowUp, checkBackAt: followUpFirstAt ? formatWhen(followUpFirstAt) : null });
   }
 
   if (name === "list_reminders") {

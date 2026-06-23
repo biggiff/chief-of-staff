@@ -33,8 +33,13 @@ async function run(req: NextRequest) {
     if (r.recurrence) {
       await rearmReminder(r.id, nextOccurrence(r.remindAt, r.recurrence));
     } else if (r.followUpAfterMinutes && nextCheck) {
-      if (!r.awaitingConfirm) await enterFollowUp(r.id, nextCheck); // reminder just fired → schedule check-back
-      else await recordCheckBack(r.id, r.followUpsLeft, nextCheck); // a check-back fired → decrement / slip
+      if (!r.awaitingConfirm) {
+        // First check-back: use the absolute time if set & still future, else relative.
+        const firstCheck = r.followUpFirstAt && r.followUpFirstAt.getTime() > Date.now() ? r.followUpFirstAt : nextCheck;
+        await enterFollowUp(r.id, firstCheck);
+      } else {
+        await recordCheckBack(r.id, r.followUpsLeft, nextCheck); // 2nd check → +interval (default +24h) / slip
+      }
     } else {
       await markReminderSent(r.id);
     }

@@ -1331,24 +1331,29 @@ export async function createReminder(input: {
   text: string;
   remindAt: Date;
   recurrence?: "daily" | "weekdays" | "weekly" | "monthly" | null;
-  followUpAfterMinutes?: number | null; // if set, Scout checks back until confirmed (max 2x)
+  followUpAfterMinutes?: number | null; // relative: check back N min after the reminder fires
+  followUpFirstAt?: Date | null; // absolute: first check-back at this exact time
   conversationId?: string | null;
 }) {
-  // Follow-up only on one-shot reminders (recurring ones repeat anyway).
-  const followUp = !input.recurrence && input.followUpAfterMinutes ? input.followUpAfterMinutes : null;
+  // Follow-up only on one-shot reminders (recurring ones repeat anyway). An
+  // absolute first-check implies follow-up; its 2nd check defaults to +24h.
+  const wantsFollowUp = !input.recurrence && (input.followUpAfterMinutes || input.followUpFirstAt);
+  const intervalMin = wantsFollowUp ? (input.followUpAfterMinutes ?? 1440) : null;
+  const firstAt = !input.recurrence ? input.followUpFirstAt ?? null : null;
   const [row] = await db
     .insert(remindersTable)
     .values({
       text: input.text.slice(0, 1000),
       remindAt: input.remindAt,
       recurrence: input.recurrence ?? null,
-      followUpAfterMinutes: followUp,
-      followUpsLeft: followUp ? 2 : 0,
+      followUpAfterMinutes: intervalMin,
+      followUpFirstAt: firstAt,
+      followUpsLeft: wantsFollowUp ? 2 : 0,
       source: "chat",
     })
     .returning();
   const repeat = input.recurrence ? `, repeating ${input.recurrence}` : "";
-  const fu = followUp ? `, and I'll check back if you haven't done it` : "";
+  const fu = wantsFollowUp ? (firstAt ? `, and I'll check back at ${formatWhen(firstAt)} if you haven't` : `, and I'll check back if you haven't done it`) : "";
   const summary = `Set a reminder for ${formatWhen(input.remindAt)}${repeat}${fu}: "${input.text.slice(0, 80)}"`;
   await logActivity({
     actionKind: "reminder_create",

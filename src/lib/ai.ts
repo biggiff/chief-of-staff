@@ -1066,9 +1066,13 @@ async function runTool(
   }
 
   if (name === "get_oura") {
-    const { getOuraData, ouraEnabled } = await import("./integrations/oura");
+    const { getOuraData, getTodaySteps, ouraEnabled } = await import("./integrations/oura");
     if (!ouraEnabled()) return j({ ok: false, error: "Oura isn't connected." });
-    return j({ ok: true, oura: await getOuraData((input.days as number) ?? 7) });
+    const [oura, todaySteps] = await Promise.all([getOuraData((input.days as number) ?? 7), getTodaySteps()]);
+    const stepsNote = todaySteps == null
+      ? "No activity/steps synced for TODAY yet. IMPORTANT: Oura activity updates THROUGHOUT THE DAY whenever the ring syncs (phone nearby / Oura app opened) — it does NOT only update overnight (that's sleep/readiness). So say today's count isn't synced yet and suggest opening the Oura app; do NOT claim steps only come in overnight."
+      : null;
+    return j({ ok: true, oura, todaySteps, stepsNote });
   }
 
   if (name === "get_workouts") {

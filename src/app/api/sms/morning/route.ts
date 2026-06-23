@@ -42,6 +42,22 @@ async function run(req: NextRequest) {
   const dueTitles = due.slice(0, 4).map((t) => t.title);
 
   const parts: string[] = ["☀️ Morning."];
+
+  // Body readiness from Oura, if connected — leads the brief so she knows the kind of day.
+  try {
+    const { getOuraData, ouraEnabled } = await import("@/lib/integrations/oura");
+    if (ouraEnabled()) {
+      const o = (await getOuraData(2))?.latest;
+      if (o?.readiness != null) {
+        const sleep = o.sleepHours != null ? `, slept ${o.sleepHours}h` : "";
+        const band = o.readiness >= 85 ? "well-recovered — good day to push" : o.readiness >= 70 ? "decent recovery" : "running low — take it easy";
+        parts.push(`Readiness ${o.readiness}${sleep} — ${band}.`);
+      }
+    }
+  } catch (err) {
+    console.error("morning oura failed", err);
+  }
+
   parts.push(events.length ? `Today: ${events.slice(0, 5).join(", ")}.` : "Nothing on the calendar today.");
   if (dueTitles.length) {
     parts.push(`Due: ${dueTitles.join(", ")}${due.length > 4 ? `, +${due.length - 4} more` : ""}.`);

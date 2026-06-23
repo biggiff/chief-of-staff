@@ -21,6 +21,7 @@ export async function middleware(req: NextRequest) {
     pathname === "/api/sms" ||           // Twilio webhook — auth'd by signature + allowlist
     pathname === "/api/sms/morning" ||   // cron — auth'd by CRON_SECRET
     pathname === "/api/reminders/tick" || // cron — auth'd by CRON_SECRET
+    pathname === "/api/steps/check" ||    // cron — auth'd by CRON_SECRET
     pathname === "/api/telegram"         // Telegram webhook — auth'd by secret token + chat allowlist
   ) {
     return NextResponse.next();

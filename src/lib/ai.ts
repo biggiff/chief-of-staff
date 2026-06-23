@@ -762,6 +762,11 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { limit: { type: "number" } } },
   },
   {
+    name: "get_oura",
+    description: "Read her Oura ring data — sleep, readiness, and activity scores (and sleep hours, steps), latest + recent trend. Use for 'how did I sleep', 'what's my readiness', 'how am I recovering', or to ground anything about her body/energy/Health in real data instead of guessing. Default ~7 days.",
+    input_schema: { type: "object", properties: { days: { type: "number" } } },
+  },
+  {
     name: "get_attention_history",
     description: "Dated history of logged attention/activity, ordered by when it actually HAPPENED (not when entered). This is the source for 'when did I last work out?', 'how consistent was I in May?', 'what's my workout frequency over time?'. Filter by role_name and/or type (e.g. focused_work for workouts) and/or since_days.",
     input_schema: {
@@ -1042,6 +1047,12 @@ async function runTool(
       conversationId,
     });
     return j({ ok: true, summary });
+  }
+
+  if (name === "get_oura") {
+    const { getOuraData, ouraEnabled } = await import("./integrations/oura");
+    if (!ouraEnabled()) return j({ ok: false, error: "Oura isn't connected." });
+    return j({ ok: true, oura: await getOuraData((input.days as number) ?? 7) });
   }
 
   if (name === "get_attention_history") {

@@ -151,3 +151,96 @@ export function formatEvents(events: CalEvent[]): string {
     })
     .join("\n");
 }
+
+/** Resolve a calendar by fuzzy name (exact, then contains; case-insensitive). */
+export async function findCalendar(name: string): Promise<CalendarInfo | null> {
+  const q = name.trim().toLowerCase();
+  if (!q) return null;
+  const cals = await listCalendars();
+  return (
+    cals.find((c) => c.name.toLowerCase() === q) ??
+    cals.find((c) => c.name.toLowerCase().includes(q)) ??
+    null
+  );
+}
+
+export type NewEvent = {
+  title: string;
+  date: string; // YYYY-MM-DD (user's tz)
+  startTime?: string | null; // "HH:MM" 24h; omit/null = all-day
+  endTime?: string | null; // "HH:MM"; defaults to start + 1h
+  calendarName?: string | null; // fuzzy match; defaults to primary
+  location?: string | null;
+  description?: string | null;
+};
+
+export type CreateResult =
+  | { ok: true; title: string; calendar: string; when: string; htmlLink: string | null }
+  | { ok: false; error: string; calendars?: string[]; needsReconnect?: boolean };
+
+const pad = (t: string): string => {
+  const [h, m] = t.trim().split(":");
+  return `${String(parseInt(h, 10)).padStart(2, "0")}:${(m ?? "00").padStart(2, "0")}`;
+};
+const addHour = (t: string): string => {
+  const [h, m] = pad(t).split(":").map((n) => parseInt(n, 10));
+  return `${String((h + 1) % 24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+};
+const nextDay = (ymd: string): string => {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+};
+
+/** Create a real event on a chosen calendar. Requires calendar write scope. */
+export async function createEvent(ev: NewEvent): Promise<CreateResult> {
+  if (!calendarEnabled()) return { ok: false, error: "Calendar isn't connected." };
+  const token = await getAccessToken();
+
+  let cal: CalendarInfo | null;
+  if (ev.calendarName && ev.calendarName.trim()) {
+    cal = await findCalendar(ev.calendarName);
+    if (!cal) {
+      const cals = await listCalendars();
+      return { ok: false, error: `No calendar matches "${ev.calendarName}".`, calendars: cals.map((c) => c.name) };
+    }
+  } else {
+    const cals = await listCalendars();
+    cal = cals.find((c) => c.primary) ?? { id: "primary", name: "Calendar", primary: true };
+  }
+
+  const tz = appTimeZone();
+  const body: Record<string, unknown> = {
+    summary: ev.title,
+    ...(ev.location ? { location: ev.location } : {}),
+    ...(ev.description ? { description: ev.description } : {}),
+  };
+  if (ev.startTime) {
+    const end = ev.endTime || addHour(ev.startTime);
+    body.start = { dateTime: `${ev.date}T${pad(ev.startTime)}:00`, timeZone: tz };
+    body.end = { dateTime: `${ev.date}T${pad(end)}:00`, timeZone: tz };
+  } else {
+    body.start = { date: ev.date }; // all-day; end date is exclusive
+    body.end = { date: nextDay(ev.date) };
+  }
+
+  const res = await fetch(`${CAL_API}/calendars/${encodeURIComponent(cal.id)}/events`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        needsReconnect: true,
+        error: `Calendar is connected READ-ONLY — I can't create events until Google is reconnected with calendar write access. (Google ${res.status})`,
+      };
+    }
+    return { ok: false, error: `Google create event ${res.status}: ${t.slice(0, 150)}` };
+  }
+  const j = (await res.json()) as { htmlLink?: string };
+  const when = ev.startTime ? `${ev.date} at ${pad(ev.startTime)}` : `${ev.date} (all day)`;
+  return { ok: true, title: ev.title, calendar: cal.name, when, htmlLink: j.htmlLink ?? null };
+}

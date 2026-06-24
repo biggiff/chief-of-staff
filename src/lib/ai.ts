@@ -940,6 +940,33 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "get_calendar",
+    description:
+      "Read events on ANY date or date range across ALL connected calendars (read-only). Use this for any day other than today, and ALWAYS to verify an event you just created actually landed. `date` is YYYY-MM-DD; pass `end_date` (YYYY-MM-DD) too for a range. Omit both for today. Events are labeled with the calendar they live on.",
+    input_schema: {
+      type: "object",
+      properties: { date: { type: "string", description: "YYYY-MM-DD" }, end_date: { type: "string", description: "YYYY-MM-DD (optional, for a range)" } },
+    },
+  },
+  {
+    name: "create_calendar_event",
+    description:
+      "Create a REAL event on Google Calendar. Only claim an event was added AFTER this returns ok:true — never say you added something without calling this. `date` YYYY-MM-DD; `start_time`/`end_time` are 24h 'HH:MM' (omit start_time for an all-day event). `calendar_name` targets a specific calendar by name (e.g. 'Austyn', 'Family') — fuzzy-matched; omit for her primary calendar. If it returns needsReconnect, tell her Google must be reconnected with write access.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        date: { type: "string", description: "YYYY-MM-DD" },
+        start_time: { type: "string", description: "HH:MM 24h; omit for all-day" },
+        end_time: { type: "string", description: "HH:MM 24h; defaults to start + 1h" },
+        calendar_name: { type: "string", description: "Target calendar name; omit for primary" },
+        location: { type: "string" },
+        description: { type: "string" },
+      },
+      required: ["title", "date"],
+    },
+  },
+  {
     name: "search_emails",
     description:
       "Search/read the user's Gmail across all folders. `query` is Gmail search syntax (e.g. 'in:anywhere', 'from:mom', 'is:unread', 'subject:invoice', 'newer_than:7d', 'label:PTO'). Empty = recent inbox. Returns id/from/subject/date/snippet.",
@@ -1557,6 +1584,38 @@ async function runTool(
     return j({ ok: true, count: cals.length, calendars: cals.map((c) => ({ name: c.name, primary: c.primary })) });
   }
 
+  if (name === "get_calendar") {
+    const { calendarEnabled, listEventsBetween } = await import("./integrations/google-calendar");
+    if (!calendarEnabled()) return j({ ok: false, error: "Google Calendar not connected." });
+    const fromStr = (input.date as string) || todayStr();
+    const toStr = (input.end_date as string) || fromStr;
+    const start = parseLocalDateTime(`${fromStr} 00:00`);
+    const end = parseLocalDateTime(`${toStr} 23:59`);
+    if (!start || !end) return j({ ok: false, error: "Couldn't parse that date — use YYYY-MM-DD." });
+    const events = await listEventsBetween(start, end);
+    return j({
+      ok: true,
+      range: { from: fromStr, to: toStr },
+      count: events.length,
+      events: events.map((e) => ({ title: e.title, start: e.start, allDay: e.allDay, calendar: e.calendar })),
+    });
+  }
+
+  if (name === "create_calendar_event") {
+    const { calendarEnabled, createEvent } = await import("./integrations/google-calendar");
+    if (!calendarEnabled()) return j({ ok: false, error: "Google Calendar not connected." });
+    const result = await createEvent({
+      title: String(input.title ?? "").trim(),
+      date: String(input.date ?? "").trim(),
+      startTime: (input.start_time as string) ?? null,
+      endTime: (input.end_time as string) ?? null,
+      calendarName: (input.calendar_name as string) ?? null,
+      location: (input.location as string) ?? null,
+      description: (input.description as string) ?? null,
+    });
+    return j(result);
+  }
+
   if (name === "list_email_labels") {
     const gmail = await import("./integrations/gmail");
     if (!gmail.gmailConfigured()) return j({ ok: false, error: "Gmail not connected." });
@@ -1804,7 +1863,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 
 const LEAN_TOOL_NAMES = new Set([
   "create_task", "schedule_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention",
-  "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_todoist_tasks", "reassign",
+  "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
 ]);
 
 const LEAN_SYSTEM = `${SCOUT_VOICE}

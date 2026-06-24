@@ -17,7 +17,8 @@ config({ path: ".env.local" });
 const PORT = 4567;
 const REDIRECT = `http://localhost:${PORT}`;
 const SCOPE = [
-  "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/calendar.readonly", // list calendars + read events
+  "https://www.googleapis.com/auth/calendar.events", // create/edit events
   "https://www.googleapis.com/auth/gmail.readonly", // read mail across all folders
   "https://www.googleapis.com/auth/gmail.compose", // create/manage drafts
   "https://www.googleapis.com/auth/gmail.send", // send (gated by confirmation)

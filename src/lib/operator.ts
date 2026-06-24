@@ -32,6 +32,7 @@ import {
   reopenTodoistTask,
   deleteTodoistTask,
   findActiveTodoistTask,
+  todoistProjectNameById,
 } from "./integrations/todoist";
 import { formatDate, formatTime, formatWhen } from "./dates";
 
@@ -160,17 +161,22 @@ export async function logAttention(input: {
 export async function createTask(input: {
   title: string;
   role?: Role | null;
-  projectId?: string | null;
+  projectId?: string | null; // Compass project id (local mirror only)
+  todoistProjectId?: string | null; // Todoist project id — where it ACTUALLY files
   priority?: Priority;
   dueString?: string | null;
   conversationId?: string | null;
 }) {
-  // Todoist is the source of truth — create there first.
+  // Todoist is the source of truth — create there first, in the target project.
   const created = await createTodoistTask({
     content: input.title,
     priority: input.priority,
     dueString: input.dueString,
+    projectId: input.todoistProjectId ?? null,
   });
+  // Read back the REAL project it landed in, so the confirmation is grounded
+  // (never claim a project the task didn't actually go to).
+  const landedProject = await todoistProjectNameById(created.project_id ?? null);
 
   // Capture the resolved due date/time from Todoist's response.
   const dueRaw = created.due?.datetime || created.due?.date || null;
@@ -197,7 +203,7 @@ export async function createTask(input: {
     })
     .returning();
 
-  const summary = `Created task "${input.title}" in Todoist${dueLabel ? ` for ${dueLabel}` : ""}${input.role ? ` (${input.role.name})` : ""}`;
+  const summary = `Created task "${input.title}" in Todoist → ${landedProject}${dueLabel ? ` for ${dueLabel}` : ""}${input.role ? ` (${input.role.name})` : ""}`;
   await logActivity({
     actionKind: "create_task",
     summary,
@@ -206,7 +212,7 @@ export async function createTask(input: {
     undoPayload: { taskId: task.id, todoistId: created.id },
     conversationId: input.conversationId,
   });
-  return { task, summary, dueLabel };
+  return { task, summary, dueLabel, landedProject };
 }
 
 export async function completeTask(input: { task: typeof tasksTable.$inferSelect; conversationId?: string | null }) {

@@ -481,17 +481,30 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_task",
-    description: "Create a task in Todoist (the source of truth) and mirror it in Compass. Infer the role when obvious. The result may report duplicateFound (a similar open task already exists) — if so, do NOT create another; confirm with the user, and only pass force=true if they want it anyway. NOTE: for grocery/shopping items, use add_grocery_items instead — it auto-sorts them into store sections.",
+    description: "Create a task in Todoist (the source of truth) and mirror it in Compass. Pass `project_name` to file it into a specific Todoist project (e.g. 'PTO Treasurer') — otherwise it goes to her Inbox. The result includes `project` = the REAL project it landed in; confirm using THAT value, never assume where it went. If the result is projectNotFound, the named project doesn't exist — tell her the available projects (returned) and ask, don't invent one. The result may report duplicateFound (a similar open task already exists) — if so, do NOT create another; confirm, and only pass force=true if they want it anyway. For grocery/shopping items, use add_grocery_items instead.",
     input_schema: {
       type: "object",
       properties: {
         title: { type: "string" },
         role_name: { type: "string" },
+        project_name: { type: "string", description: "Existing Todoist project to file into (e.g. 'PTO Treasurer'). Omit for Inbox." },
         priority: { type: "string", enum: ["low", "medium", "high"] },
         due_string: { type: "string", description: "Natural-language due date/time e.g. 'tomorrow', 'friday at 10am'." },
         force: { type: "boolean", description: "Create even if a similar open task exists (only after the user confirms)." },
       },
       required: ["title"],
+    },
+  },
+  {
+    name: "move_task",
+    description: "Move an existing Todoist task into a different project. `query` = the task to find, `project_name` = the destination project. It reads the task back AFTER moving and returns `movedTo` = the task's REAL project — report that. If ok:false with projectNotFound, the destination doesn't exist (available projects are returned); if needsClarification, the task match was ambiguous (candidates returned).",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Text to find the task to move." },
+        project_name: { type: "string", description: "Destination Todoist project name." },
+      },
+      required: ["query", "project_name"],
     },
   },
   {
@@ -1186,14 +1199,45 @@ async function runTool(
       }
     }
     const role = matchRole(input.role_name as string | undefined, roles);
-    const { task, summary } = await createTask({
+    // If she named a project, resolve it to a REAL Todoist project (find-only).
+    // Unknown name → return the actual project list so Scout asks, never invents.
+    let todoistProjectId: string | null = null;
+    const wantProject = (input.project_name as string | undefined)?.trim();
+    if (wantProject) {
+      const { resolveProjectAndSections, listTodoistProjects, todoistEnabled } = await import("./integrations/todoist");
+      if (todoistEnabled()) {
+        const proj = await resolveProjectAndSections(wantProject);
+        if (!proj) {
+          return j({ ok: false, projectNotFound: true, requested: wantProject, available: await listTodoistProjects() });
+        }
+        todoistProjectId = proj.projectId;
+      }
+    }
+    const { task, summary, landedProject } = await createTask({
       title: input.title as string,
       role,
+      todoistProjectId,
       priority: (input.priority as "low" | "medium" | "high") ?? "medium",
       dueString: (input.due_string as string) ?? null,
       conversationId,
     });
-    return j({ ok: true, summary, taskId: task.id, needsRole: !role });
+    return j({ ok: true, summary, taskId: task.id, project: landedProject, needsRole: !role });
+  }
+
+  if (name === "move_task") {
+    const { findActiveTodoistTask, resolveProjectAndSections, moveTodoistTaskToProject, todoistProjectNameById, listTodoistProjects, todoistEnabled } =
+      await import("./integrations/todoist");
+    if (!todoistEnabled()) return j({ ok: false, error: "Todoist not connected." });
+    const { best, confident, candidates } = await findActiveTodoistTask(input.query as string);
+    if (!best) return j({ ok: false, error: "No open task matched.", query: input.query });
+    if (!confident) return j({ ok: false, needsClarification: true, candidates: candidates.map((c) => c.content) });
+    const proj = await resolveProjectAndSections(input.project_name as string);
+    if (!proj) return j({ ok: false, projectNotFound: true, requested: input.project_name, available: await listTodoistProjects() });
+    const newProjId = await moveTodoistTaskToProject(best.id, proj.projectId);
+    const movedTo = await todoistProjectNameById(newProjId);
+    // Keep the Compass mirror honest too.
+    await db.update(tasksTable).set({ todoistProjectId: newProjId }).where(eq(tasksTable.externalId, best.id));
+    return j({ ok: movedTo.toLowerCase() === proj.name.toLowerCase(), task: best.content, movedTo, intended: proj.name });
   }
 
   if (name === "add_grocery_items") {
@@ -1862,7 +1906,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 }
 
 const LEAN_TOOL_NAMES = new Set([
-  "create_task", "schedule_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention",
+  "create_task", "move_task", "schedule_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention",
   "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
 ]);
 

@@ -95,6 +95,42 @@ export async function createTodoistTask(input: {
   return (await res.json()) as CreatedTodoistTask;
 }
 
+/** Map a Todoist project id to its name (for read-back). Null/unknown → "Inbox". */
+export async function todoistProjectNameById(id: string | null | undefined): Promise<string> {
+  if (!id) return "Inbox";
+  const token = todoistToken();
+  if (!token) return "Inbox";
+  const projects = await paginate<TodoistProject>(token, "projects");
+  return projects.find((p) => p.id === id)?.name ?? "Inbox";
+}
+
+/** Active (non-deleted) project names — so Scout can confirm a real target instead of inventing one. */
+export async function listTodoistProjects(): Promise<string[]> {
+  const token = todoistToken();
+  if (!token) return [];
+  const projects = await paginate<TodoistProject>(token, "projects");
+  return projects.filter((p) => !p.is_deleted).map((p) => p.name);
+}
+
+/** Move a task to a different PROJECT, then READ BACK its real project id to
+ *  confirm it actually landed (returns the post-move project id, or null). */
+export async function moveTodoistTaskToProject(id: string, projectId: string): Promise<string | null> {
+  const token = todoistToken();
+  if (!token) throw new Error("TODOIST_API_TOKEN is not set.");
+  const res = await fetch(`${API}/tasks/${id}/move`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  if (!res.ok && res.status !== 204) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Todoist move ${res.status}: ${t.slice(0, 200)}`);
+  }
+  const check = await fetch(`${API}/tasks/${id}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  if (!check.ok) return null;
+  return ((await check.json()) as TodoistTask).project_id ?? null;
+}
+
 /** Move an existing task into a section (used to re-categorize a grocery item). */
 export async function moveTodoistTask(id: string, sectionId: string): Promise<void> {
   const token = todoistToken();

@@ -271,6 +271,34 @@ export async function findActiveTodoistTask(query: string): Promise<{
   };
 }
 
+/** Fuzzy-find SIMILAR active tasks LIVE (for duplicate detection), with project. */
+export async function findSimilarActiveTodoistTasks(
+  title: string
+): Promise<{ content: string; project: string | null; score: number }[]> {
+  const token = todoistToken();
+  if (!token) return [];
+  const [tasks, projects] = await Promise.all([fetchActiveTasks(token), paginate<TodoistProject>(token, "projects")]);
+  const pname = new Map(projects.map((p) => [p.id, p.name]));
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const q = norm(title);
+  const qWords = q.split(" ").filter(Boolean);
+  return tasks
+    .map((t) => {
+      const c = norm(t.content);
+      let score = 0;
+      if (c === q) score = 100;
+      else if (c.includes(q) || q.includes(c)) score = 85;
+      else {
+        const tw = new Set(c.split(" ").filter(Boolean));
+        const overlap = qWords.filter((w) => tw.has(w)).length;
+        score = (overlap / Math.max(qWords.length, 1)) * 70;
+      }
+      return { content: t.content, project: t.project_id ? pname.get(t.project_id) ?? null : null, score };
+    })
+    .filter((x) => x.score >= 55)
+    .sort((a, b) => b.score - a.score);
+}
+
 /** Find an open task by name within a project (single lookup — re-fetches the list). */
 export async function findTaskInProject(projectId: string, query: string): Promise<{ id: string; content: string } | null> {
   const inProj = await listActiveTasksInProject(projectId);

@@ -32,7 +32,6 @@ import {
   completeTaskLive,
   createIdea,
   findSimilarIdeas,
-  findSimilarOpenTasks,
   appendIdeaNote,
   reassign,
   recordPushback,
@@ -1189,12 +1188,14 @@ async function runTool(
 
   if (name === "create_task") {
     if (input.force !== true) {
-      const similar = await findSimilarOpenTasks(input.title as string);
+      // Duplicate check runs LIVE against Todoist (source of truth), not the mirror.
+      const { findSimilarActiveTodoistTasks } = await import("./integrations/todoist");
+      const similar = await findSimilarActiveTodoistTasks(input.title as string);
       if (similar.length && similar[0].score >= 70) {
         return j({
           ok: false,
           duplicateFound: true,
-          existing: { title: similar[0].task.title },
+          existing: { title: similar[0].content, project: similar[0].project },
         });
       }
     }
@@ -1260,17 +1261,16 @@ async function runTool(
     // "done X" means close that loop — regardless of which tool Scout picked.
     const loop = await confirmReminder(query, conversationId, true);
     if (loop.ok) return j(loop);
+    // LIVE-first: match against the real Todoist, never the (possibly stale) mirror.
+    const live = await completeTaskLive(query, conversationId);
+    if (live.ok || live.needsClarification) return j(live);
+    // Live found nothing — last-resort mirror match (covers rare cases live missed).
     const { best, confident, candidates } = await findOpenTask(query);
-    // Mirror has a confident match → close it.
     if (best && confident) {
       const { summary } = await completeTask({ task: best, conversationId });
       return j({ ok: true, summary });
     }
-    // Mirror missed or was ambiguous → search Todoist LIVE (handles grocery items
-    // and anything added since the last sync, which the mirror won't have).
-    const live = await completeTaskLive(query, conversationId);
-    if (live.ok || live.needsClarification) return j(live);
-    if (!best) return j({ ok: false, error: "No open task matched in Compass or Todoist.", query });
+    if (!best) return j({ ok: false, error: "No open task matched in Todoist.", query });
     return j({ ok: false, needsClarification: true, candidates: candidates.map((c) => c.task.title) });
   }
 

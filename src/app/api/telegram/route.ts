@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
       // Keep the Todoist mirror fresh for the Telegram channel (throttled).
       try {
         const { syncTodoistIfStale } = await import("@/lib/integrations/todoist");
-        await syncTodoistIfStale();
+        await syncTodoistIfStale(2); // keep the mirror within ~2 min of Todoist for context signals
       } catch (err) {
         console.error("telegram post-reply sync failed", err);
       }

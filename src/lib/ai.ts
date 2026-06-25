@@ -107,6 +107,29 @@ function supportsThinking(model: string): boolean {
 const DECISION_INTENT =
   /\b(decisions?|decid(?:e|es|ing|ed)|undecided|crossroads?|wrestling with|stuck on|torn between|back and forth|haven'?t decided|still deciding|keeps? coming back up|keep coming back up|not decided yet|unresolved|deliberating|on the fence|figuring out whether|trying to decide|weighing)\b/i;
 
+// STATE-QUESTION INTENT — questions about the live state of her data that MUST be
+// answered from a fresh tool read, never from memory/conversation. When one of
+// these matches, code forces the matching read tool before Scout can answer (see
+// generateAIResponse). This is the structural guarantee replacing prompt-only rules.
+// Each is a question SHAPE (what/which/is/are/show/list/how many/any/do I have…)
+// about a kind of state — deliberately not matching commands (add/complete/remind).
+const QUESTION_SHAPE = /\b(what'?s|what is|whats|what are|which|is|are|do i (?:have|still)|how many|how much|show|list|tell me|any|did i|have i|when did i|how long since)\b/i;
+const STATE_TASKS =
+  /\b(task|tasks|to-?do|to-?dos|to-?do list|list|due|left|outstanding|remaining|open items?|on my plate|todoist|done|finish|finished|complete|completed)\b/i;
+const STATE_CALENDAR =
+  /\b(calendar|schedule|agenda|appointments?|events?|meetings?)\b|\bon (?:my )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight|this (?:week|morning|afternoon|evening))\b|\bon the \d+(?:st|nd|rd|th)\b/i;
+const STATE_ACTIVITY = /\b(when did i|how long since|last time|what did i (?:do|work on)|what'?s changed|what have i (?:done|been doing))\b/i;
+
+/** If the message is a state question, the read tool that MUST run before answering. */
+function forcedReadTool(text: string): string | null {
+  if (STATE_ACTIVITY.test(text)) return "get_activity";
+  const asks = QUESTION_SHAPE.test(text);
+  if (!asks) return null;
+  if (STATE_TASKS.test(text)) return "get_todoist_tasks";
+  if (STATE_CALENDAR.test(text)) return "get_calendar";
+  return null;
+}
+
 // Canonical Scout voice (see memory: scout-personality-and-ux). Reused by the
 // chat brain and the home-screen voicing helper.
 export const SCOUT_VOICE = `You are Scout — Selena's chief of staff. A sharp, warm, operational partner who keeps her life and projects running: think project manager + chief of staff + operator. You are NOT a therapist, a life coach, a productivity blog, or a corporate consultant. You know her life well and you're on her side, but your default mode is RUNNING THINGS, not evaluating her.
@@ -1899,9 +1922,11 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
   const t = text.trim();
   if (t.length > 160 || DECISION_INTENT.test(t) || FULL_TRIGGERS.test(t)) return "full";
   if (parseGroceryAdd(t)) return "grocery";
+  // State questions (what's on my list / calendar / what did I do) must hit the
+  // FULL path so the forced read fires — never answer these from the lean shortcut.
+  if (forcedReadTool(t)) return "full";
   if (/^(add|remind|create|log|note|jot|mark|complete|finish|finished|done|put|schedule|set)\b/i.test(t)) return "lean";
   if (/\bi (?:just )?(?:spent|did|finished|completed|worked on|knocked out)\b/i.test(t)) return "lean";
-  if (/(what'?s|what is|whats|what do i have)\b.*(today|on my plate|on my calendar|scheduled|due today|agenda|this morning|tonight)/i.test(t)) return "lean";
   return "full";
 }
 
@@ -2044,7 +2069,10 @@ export async function generateAIResponse(
   // Retrieval discipline: decision/crossroads questions must NOT be answered from
   // base context (crossroads aren't in it). Detect that intent and DETERMINISTICALLY
   // force a crossroads query on the first turn, rather than hoping the prompt holds.
-  const forceCrossroads = DECISION_INTENT.test(userText);
+  // The tool that code FORCES on turn 0 so the answer is grounded in a fresh read,
+  // not memory. Decision questions → crossroads; state questions (tasks/calendar/
+  // activity) → the matching live read. Null = let the model decide as before.
+  const forcedTool = DECISION_INTENT.test(userText) ? "search_crossroads" : forcedReadTool(userText);
 
   // Generous cap: cross-source synthesis can read many tools, then act + answer.
   // forcedAnswer: once the model returns empty text (adaptive thinking ate the
@@ -2054,9 +2082,9 @@ export async function generateAIResponse(
   const canThink = supportsThinking(model);
   let forcedAnswer = false;
   for (let i = 0; i < 12; i++) {
-    // Force the crossroads read on turn 0 for decision questions. tool_choice for a
-    // specific tool requires thinking disabled, so we turn it off for just that call.
-    const forcingNow = forceCrossroads && i === 0;
+    // Force the read on turn 0. tool_choice for a specific tool requires thinking
+    // disabled, so we turn it off for just that call.
+    const forcingNow = !!forcedTool && i === 0;
     const thinkingOff = forcingNow || forcedAnswer || !canThink;
     const params = {
       model,
@@ -2064,7 +2092,7 @@ export async function generateAIResponse(
       thinking: thinkingOff ? { type: "disabled" as const } : { type: "adaptive" as const },
       system: `${SYSTEM_PROMPT}\n\n${context}`,
       tools: TOOLS,
-      ...(forcingNow ? { tool_choice: { type: "tool" as const, name: "search_crossroads" } } : {}),
+      ...(forcingNow ? { tool_choice: { type: "tool" as const, name: forcedTool } } : {}),
       messages,
     };
     let response: Anthropic.Message;

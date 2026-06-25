@@ -59,13 +59,21 @@ export async function POST(req: NextRequest) {
   const userText = caption || text;
   if (!imageFileId && !userText) return ok(); // nothing actionable
 
+  // If she used Telegram's Reply/quote on an earlier message, capture WHAT she's
+  // pointing at so Scout knows the reference even if it scrolled out of history.
+  const quoted = msg?.reply_to_message;
+  const quotedText = ((quoted?.text ?? quoted?.caption ?? "") as string).trim();
+  const effectivePrompt = quotedText
+    ? `[She tapped Reply on this earlier message, so she's referring to it:\n"${quotedText.slice(0, 600)}"]\n\n${userText || "(no new text — she's pointing at the quoted message above)"}`
+    : userText;
+
   const conversationId = await getTelegramConversationId();
   const prior = await db
     .select()
     .from(messages)
     .where(eq(messages.conversationId, conversationId))
     .orderBy(desc(messages.createdAt))
-    .limit(10);
+    .limit(24); // wider window so references reach back ~12 exchanges, not ~5
   const history = prior.reverse().map((m) => ({ role: m.role, content: m.content }));
   await db.insert(messages).values({ conversationId, role: "user", content: userText || "📷 Photo" });
 
@@ -91,7 +99,7 @@ export async function POST(req: NextRequest) {
         // mid-stream partial can never land after the final complete text.
         let chain: Promise<void> = Promise.resolve();
         let last = 0;
-        const prompt = userText || "Take a look at this photo — what is it, and is there anything I should capture or do with it?";
+        const prompt = effectivePrompt || "Take a look at this photo — what is it, and is there anything I should capture or do with it?";
         const reply = await generateAIResponse(prompt, history, conversationId, image, (acc) => {
           const now = Date.now();
           if (msgId && acc && now - last > 1300) {
@@ -108,7 +116,7 @@ export async function POST(req: NextRequest) {
         }
       } else {
         // No AI key — rule-based fallback.
-        const reply = await generateChiefResponse(userText, history, conversationId);
+        const reply = await generateChiefResponse(effectivePrompt || userText, history, conversationId);
         await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
         await sendTelegram(chatId, reply.content);
       }

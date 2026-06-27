@@ -130,6 +130,34 @@ function forcedReadTool(text: string): string | null {
   return null;
 }
 
+// ── Phase 2: answer-guard ────────────────────────────────────────────────────
+// Catches the worst failure mode: Scout SAYING it did something ("Done — added
+// it") when it never actually called a tool to do it (the fabricated calendar
+// event that hit a real calendar). Deterministic + cheap: only fires a single
+// retry when a reply claims an action AND no write tool ran this turn.
+
+// Past-tense "I did it" claims. NOT offers/questions (handled below).
+const ACTION_CLAIM =
+  /\b(done|added|created|scheduled|completed|logged|moved|deleted|removed|cancell?ed|set up|checked off|knocked (?:it |that )?out|marked (?:it |that )?(?:done|complete|completed)|put (?:it|that|them) (?:on|in)|added (?:it|that|them)|i'?ve (?:added|created|scheduled|set|logged|moved|completed|put|sent|drafted))\b/i;
+// If the reply is offering/asking (not claiming), don't flag it.
+const OFFER_OR_QUESTION = /\b(want me to|should i|shall i|i can|i could|would you like|do you want|let me know if|i'?ll |i will )\b/i;
+// Tools that actually CHANGE something. A claim of action is only credible if one ran.
+const WRITE_TOOLS = new Set([
+  "create_task", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder",
+  "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item",
+  "log_attention", "create_idea", "add_idea_note", "capture_note", "reassign",
+  "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
+  "promote_memory", "record_observation", "record_pushback", "save_checkin",
+  "add_working_agreement", "start_workflow", "update_workflow_state",
+  "create_email_draft", "send_email", "set_step_goal", "set_proof_mode", "sync_todoist", "undo_last",
+]);
+
+/** True if the reply asserts an action was taken but no write tool actually ran. */
+function fabricatedActionClaim(text: string, toolsUsed: string[]): boolean {
+  if (!ACTION_CLAIM.test(text) || OFFER_OR_QUESTION.test(text)) return false;
+  return !toolsUsed.some((t) => WRITE_TOOLS.has(t));
+}
+
 // Canonical Scout voice (see memory: scout-personality-and-ux). Reused by the
 // chat brain and the home-screen voicing helper.
 export const SCOUT_VOICE = `You are Scout — Selena's chief of staff. A sharp, warm, operational partner who keeps her life and projects running: think project manager + chief of staff + operator. You are NOT a therapist, a life coach, a productivity blog, or a corporate consultant. You know her life well and you're on her side, but your default mode is RUNNING THINGS, not evaluating her.
@@ -2081,6 +2109,7 @@ export async function generateAIResponse(
   const model = modelForLayer(layer);
   const canThink = supportsThinking(model);
   let forcedAnswer = false;
+  let guardRetried = false; // answer-guard fires at most once per turn
   for (let i = 0; i < 12; i++) {
     // Force the read on turn 0. tool_choice for a specific tool requires thinking
     // disabled, so we turn it off for just that call.
@@ -2129,7 +2158,22 @@ export async function generateAIResponse(
       .map((b) => b.text)
       .join("\n")
       .trim();
-    if (text) return { content: text, metadata: { engine: "ai", model, toolsUsed, layer } };
+    if (text) {
+      // Answer-guard (soft, once): if the reply claims it DID something but no
+      // write tool ran this turn, it's likely fabricating — make it either do the
+      // action for real or stop claiming it. Single retry; then accept the result.
+      if (!guardRetried && fabricatedActionClaim(text, toolsUsed)) {
+        guardRetried = true;
+        messages.push({ role: "assistant", content: response.content });
+        messages.push({
+          role: "user",
+          content:
+            "SYSTEM CHECK (not from the user): your reply claims you completed an action (added/created/scheduled/completed/moved/etc.), but you did NOT call any tool that performs it this turn — so it did NOT happen. Do ONE of these: (a) call the correct tool NOW to actually do it, then confirm from the tool result; or (b) if you can't or shouldn't, rewrite WITHOUT claiming it's done — say plainly what you did or didn't do. Never state an action as done unless a tool result confirms it.",
+        });
+        continue;
+      }
+      return { content: text, metadata: { engine: "ai", model, toolsUsed, layer } };
+    }
 
     // Empty answer (e.g. stop_reason max_tokens during thinking). Retry once with
     // thinking disabled to force real text; only give up if that also comes back empty.

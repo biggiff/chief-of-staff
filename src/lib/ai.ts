@@ -61,6 +61,7 @@ import {
   listReminders,
   cancelReminder,
   confirmReminder,
+  snoozeReminder,
   createKnowledgeNote,
   searchKnowledge,
   proofModeOn,
@@ -143,7 +144,7 @@ const ACTION_CLAIM =
 const OFFER_OR_QUESTION = /\b(want me to|should i|shall i|i can|i could|would you like|do you want|let me know if|i'?ll |i will )\b/i;
 // Tools that actually CHANGE something. A claim of action is only credible if one ran.
 const WRITE_TOOLS = new Set([
-  "create_task", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder",
+  "create_task", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder", "snooze_reminder",
   "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item",
   "log_attention", "create_idea", "add_idea_note", "capture_note", "capture_dev_note", "reassign",
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
@@ -200,7 +201,7 @@ EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers mus
 
 WEEKLY REVIEW / CHECK-IN: when she asks for her "weekly review", "weekly check-in", or "how was my week", you MUST call get_weekly_review and answer from what it returns — NEVER compose a weekly review from memory or earlier in the conversation. The tool regenerates live from Compass; anything you'd say from memory is stale and will contradict what she just told you. No exceptions.
 
-REMINDER FOLLOW-UPS (accountability loop): (a) When she sets a reminder and says anything like "check back", "follow up", "make sure I do it", "hold me accountable", or "if I don't/haven't" → set follow_up=true on schedule_reminder. For a one-shot that's clearly a real commitment she's been avoiding, OFFER it ("want me to check back if you haven't?") and set it if she agrees. (b) When she says she DID something ("done", "did it", "called them", "taken care of") — especially replying to a check-back — call confirm_reminder to close the loop. "Drop it / never mind / let it go" → cancel_reminder. Don't confuse the two: confirm = she did it; cancel = she's abandoning it.
+REMINDER FOLLOW-UPS (accountability loop — she has asked you to be FIRM BUT KIND; she tends to not-see / defer / freeze-on-big / forget): (a) When she sets a reminder and says anything like "check back", "follow up", "make sure I do it", "hold me accountable", "don't let me forget", or "if I don't/haven't" → set follow_up=true on schedule_reminder. For a one-shot that's clearly a real commitment she's been avoiding, OFFER it ("want me to check back if you haven't?") and set it if she agrees. (b) Replying to a check-back, there are FOUR answers — handle each: "done / did it / taken care of" → confirm_reminder (closes the loop). "drop it / never mind / let it go" → cancel_reminder (clean release, no guilt). "not yet / haven't" → do NOT just say ok: respond warmly, ask ONE short question about what's actually blocking it, and if she names a later time use snooze_reminder to move the next check there; otherwise leave it (it will resurface). "too big / overwhelming / too much" → break it into the SMALLEST 2-minute first step, state that step, and re-commit to just that (snooze_reminder to a soon time, or schedule_reminder for the small step) — shrink, don't drop. Never shame; always keep the easy exit open. confirm = she did it; cancel = she's abandoning it; snooze = she's deferring (stays alive).
 
 This applies to META / SYSTEM-PHRASED questions too — not just natural ones. Questions about what Compass contains or whether something is empty/blank MUST trigger a real query before you answer; never answer them from base context or assumption. Examples and routing: "is the crossroads system empty?" / "what crossroads exist?" → search_crossroads; "what do you know about Coach?" / "what did we store about Gifford & Co.?" → answer_about(that topic) (and get_memories if relevant); "what active projects exist?" / "what's in Compass?" → get_compass_overview. NEVER say a role, project, crossroad, or "the system" is empty/blank/unknown unless you JUST queried it and it genuinely came back empty. If a role or project has a description, mission, desired state, or outcome (these now appear in your context and in answer_about), use that content — do not call it blank.
 
@@ -701,6 +702,11 @@ const TOOLS: Anthropic.Tool[] = [
     name: "confirm_reminder",
     description: "Close an accountability loop — she confirmed she DID the thing ('done', 'did it', 'yep called them', 'taken care of'). Marks it done so the follow-up never asks again. Pass her wording / the thing as query. Use this (not cancel) whenever she indicates completion, especially in reply to a check-back.",
     input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
+  {
+    name: "snooze_reminder",
+    description: "Reschedule an EXISTING reminder/commitment's next check to a later time — for 'not yet, remind me tonight / in 2 hours / tomorrow'. Keeps it in the accountability loop (does NOT close or duplicate it). `query` fuzzy-matches the commitment; `at` is the new time as 'YYYY-MM-DDTHH:mm' local. Use this instead of schedule_reminder when she's deferring something that already exists.",
+    input_schema: { type: "object", properties: { query: { type: "string" }, at: { type: "string", description: "New check time, 'YYYY-MM-DDTHH:mm' local." } }, required: ["query", "at"] },
   },
   {
     name: "set_proof_mode",
@@ -1240,6 +1246,12 @@ async function runTool(
 
   if (name === "confirm_reminder") {
     return j(await confirmReminder(input.query as string, conversationId));
+  }
+
+  if (name === "snooze_reminder") {
+    const newAt = parseLocalDateTime(input.at as string);
+    if (!newAt) return j({ ok: false, error: "Couldn't parse that time. Pass 'at' as 'YYYY-MM-DDTHH:mm' local." });
+    return j(await snoozeReminder(input.query as string, newAt, conversationId));
   }
 
   if (name === "set_proof_mode") {
@@ -1980,7 +1992,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 }
 
 const LEAN_TOOL_NAMES = new Set([
-  "create_task", "move_task", "schedule_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
+  "create_task", "move_task", "schedule_reminder", "snooze_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
   "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
 ]);
 

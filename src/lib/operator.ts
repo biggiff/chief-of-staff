@@ -34,7 +34,7 @@ import {
   findActiveTodoistTask,
   todoistProjectNameById,
 } from "./integrations/todoist";
-import { formatDate, formatTime, formatWhen } from "./dates";
+import { formatDate, formatTime, formatWhen, todayStr, parseLocalDateTime } from "./dates";
 
 /**
  * Compass operator layer.
@@ -1413,13 +1413,61 @@ export async function enterFollowUp(id: string, nextCheckAt: Date) {
   await db.update(remindersTable).set({ awaitingConfirm: true, remindAt: nextCheckAt, sentAt: new Date() }).where(eq(remindersTable.id, id));
 }
 
-/** A check-back just fired. Decrement; if that was the last one, mark it slipped (give up, no more pings). */
-export async function recordCheckBack(id: string, followUpsLeft: number, nextCheckAt: Date) {
-  if (followUpsLeft <= 1) {
-    await db.update(remindersTable).set({ status: "slipped", followUpsLeft: 0, sentAt: new Date() }).where(eq(remindersTable.id, id));
-  } else {
-    await db.update(remindersTable).set({ followUpsLeft: followUpsLeft - 1, remindAt: nextCheckAt, sentAt: new Date() }).where(eq(remindersTable.id, id));
+/** Next local 8am as an instant (today if it's still before 8am, else tomorrow). */
+function nextMorningAt(hour = 8): Date {
+  const now = Date.now();
+  let d = parseLocalDateTime(`${todayStr()} ${String(hour).padStart(2, "0")}:00`);
+  if (!d) return new Date(now + 24 * 60 * 60_000);
+  if (d.getTime() <= now + 60_000) {
+    const t = new Date(d);
+    t.setUTCDate(t.getUTCDate() + 1); // +1 day (Phoenix has no DST, so wall time holds)
+    d = t;
   }
+  return d;
+}
+
+/** A check-back just fired ("firm but kind"). While same-day escalations remain,
+ *  decrement and re-check soon. Once they're spent, DON'T give up — keep the
+ *  commitment alive and resurface it the next morning (and the morning brief
+ *  lists it), until she marks it done or drops it. Nothing slips silently. */
+export async function recordCheckBack(id: string, followUpsLeft: number, _nextCheckAt: Date) {
+  if (followUpsLeft <= 1) {
+    // Daily-resurface mode: stay pending + awaiting, ping again tomorrow morning.
+    await db.update(remindersTable).set({ followUpsLeft: 1, remindAt: nextMorningAt(8), sentAt: new Date() }).where(eq(remindersTable.id, id));
+  } else {
+    await db.update(remindersTable).set({ followUpsLeft: followUpsLeft - 1, remindAt: _nextCheckAt, sentAt: new Date() }).where(eq(remindersTable.id, id));
+  }
+}
+
+/** Open accountability commitments she's been checked-in on but hasn't resolved.
+ *  Powers the morning brief's "still open" lead so nothing quietly disappears. */
+export async function openCommitments(limit = 8) {
+  const rows = await db
+    .select()
+    .from(remindersTable)
+    .where(and(eq(remindersTable.status, "pending"), eq(remindersTable.awaitingConfirm, true)))
+    .orderBy(remindersTable.remindAt)
+    .limit(limit);
+  return rows.map((r) => ({ id: r.id, text: r.text }));
+}
+
+/** Reschedule an existing reminder/commitment's next check to a later time
+ *  ("not yet — remind me tonight"). Keeps it in the accountability loop. */
+export async function snoozeReminder(query: string, newAt: Date, conversationId?: string | null) {
+  const rows = await db.select().from(remindersTable).where(eq(remindersTable.status, "pending"));
+  const q = query.toLowerCase().trim();
+  const score = (r: typeof rows[number]) => {
+    const t = r.text.toLowerCase();
+    let s = t === q ? 100 : t.includes(q) || q.includes(t) ? 80 : q.split(/\W+/).filter((w) => w.length >= 4 && t.includes(w)).length * 20;
+    if (r.awaitingConfirm) s += 25;
+    return s;
+  };
+  const best = rows.map((r) => ({ r, s: score(r) })).sort((a, b) => b.s - a.s)[0];
+  if (!best || best.s < 30) return { ok: false, message: `No open reminder matching "${query}".` };
+  await db.update(remindersTable).set({ remindAt: newAt, awaitingConfirm: true }).where(eq(remindersTable.id, best.r.id));
+  const summary = `Okay — I'll check back on "${best.r.text.slice(0, 80)}" at ${formatWhen(newAt)}.`;
+  await logActivity({ actionKind: "reminder_snooze", summary, entityTable: "reminders", entityId: best.r.id, undoPayload: { id: best.r.id }, conversationId });
+  return { ok: true, message: summary };
 }
 
 /** Reminders that slipped this week (asked twice, never confirmed) — for the weekly review. */

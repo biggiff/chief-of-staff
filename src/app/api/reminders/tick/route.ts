@@ -22,10 +22,17 @@ async function run(req: NextRequest) {
   for (const r of due) {
     const nextCheck = r.followUpAfterMinutes ? new Date(Date.now() + r.followUpAfterMinutes * 60_000) : null;
     const isCheckBack = !r.recurrence && r.followUpAfterMinutes && r.awaitingConfirm;
-    // A check-back is a question with an easy exit; the first fire is the nudge.
-    const body = isCheckBack
-      ? `Did you get to "${r.text}"? Reply "done", "not yet", or "drop it" and I'll stop asking.`
-      : `⏰ ${r.text}`;
+    // Firm-but-kind escalation: first check-back is gentle; repeats get firmer and
+    // ask what's blocking — always with the same easy 4-option exit.
+    const opts = `Reply "done", "not yet", "too big", or "drop it".`;
+    let body: string;
+    if (!isCheckBack) {
+      body = `⏰ ${r.text}`;
+    } else if (r.followUpsLeft >= 2) {
+      body = `Did you get to "${r.text}"? ${opts}`;
+    } else {
+      body = `Still open: "${r.text}". What's blocking it? ${opts} ("too big" → I'll shrink it to a 2-minute start; "drop it" → I'll let it go, no guilt.)`;
+    }
     const res = await notifyOwner(body);
     if (!res.ok) { console.error("reminder send failed", r.id, res.error); continue; }
     sent++;

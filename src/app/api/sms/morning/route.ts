@@ -47,6 +47,20 @@ async function run(req: NextRequest) {
   // Readiness stays available on demand (ask Scout once it's synced).
   const lines: string[] = ["☀️ Good morning"];
 
+  // Lead with open commitments she hasn't closed — so nothing she committed to
+  // quietly disappears. These are the accountability loop's resurfacing surface.
+  try {
+    const { openCommitments } = await import("@/lib/operator");
+    const open = await openCommitments(5);
+    if (open.length) {
+      lines.push("", "🎯 Still open");
+      for (const c of open) lines.push(`• ${c.text}`);
+      lines.push('Reply "done", "too big", or "drop it" on any.');
+    }
+  } catch (err) {
+    console.error("morning commitments failed", err);
+  }
+
   lines.push("", "📅 Today");
   if (events.length) for (const e of events.slice(0, 6)) lines.push(`• ${e}`);
   else lines.push("• Nothing scheduled");

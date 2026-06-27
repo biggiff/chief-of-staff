@@ -12,6 +12,9 @@ export const maxDuration = 60;
 
 const TG_TITLE = "💬 Telegram";
 
+// A text-only message that's plainly pointing at an image she just sent.
+const REFERS_TO_IMAGE = /\b(this|that|these|those|it|pic|picture|photo|image|invite|invitation|flyer|screenshot|the (?:one|thing))\b/i;
+
 async function getTelegramConversationId(): Promise<string> {
   const [existing] = await db.select().from(conversations).where(eq(conversations.title, TG_TITLE)).limit(1);
   if (existing) {
@@ -41,7 +44,7 @@ export async function POST(req: NextRequest) {
   // Largest photo size, or an image sent as a document.
   const photo = Array.isArray(msg?.photo) && msg.photo.length ? msg.photo[msg.photo.length - 1] : null;
   const imageDoc = msg?.document && /^image\//.test(msg.document.mime_type || "") ? msg.document : null;
-  const imageFileId: string | null = photo?.file_id ?? imageDoc?.file_id ?? null;
+  let imageFileId: string | null = photo?.file_id ?? imageDoc?.file_id ?? null;
   const isVoice = !!(msg?.voice || msg?.audio || msg?.video_note);
 
   // "/start" is Telegram's first-tap — greet without running the full brain.
@@ -79,12 +82,34 @@ export async function POST(req: NextRequest) {
 
   // Generate + reply after the webhook returns.
   after(async () => {
+    let imageRecalled = false;
     try {
+      // Image memory: remember the last image she sent, and if a later text-only
+      // message refers to an image ("add this", "from the picture") within a short
+      // window, re-attach it — so a follow-up about an image she sent moments ago
+      // doesn't make Scout guess (or invent an event) because the image was on a
+      // separate message.
+      try {
+        const { getSetting, setSetting } = await import("@/lib/operator");
+        if (imageFileId) {
+          await setSetting("tg_last_image", `${imageFileId}|${Date.now()}`);
+        } else if (REFERS_TO_IMAGE.test(userText)) {
+          const [fid, ts] = ((await getSetting("tg_last_image")) || "").split("|");
+          if (fid && ts && Date.now() - parseInt(ts, 10) < 15 * 60 * 1000) {
+            imageFileId = fid;
+            imageRecalled = true;
+          }
+        }
+      } catch (err) {
+        console.error("image recall failed", err);
+      }
+
       // Download the image (if any) so Scout can actually see it.
       let image: { data: string; mediaType: string } | undefined;
       if (imageFileId) {
         const f = await getTelegramFile(imageFileId).catch(() => null);
         if (f) image = f;
+        else if (imageRecalled) imageRecalled = false; // recall failed → don't claim we have it
       }
 
       // Instant deterministic grocery adds — text-only, no model/streaming.
@@ -99,7 +124,8 @@ export async function POST(req: NextRequest) {
         // mid-stream partial can never land after the final complete text.
         let chain: Promise<void> = Promise.resolve();
         let last = 0;
-        const prompt = effectivePrompt || "Take a look at this photo — what is it, and is there anything I should capture or do with it?";
+        const base = effectivePrompt || "Take a look at this photo — what is it, and is there anything I should capture or do with it?";
+        const prompt = imageRecalled ? `(Using the image she sent a moment ago — it's attached.)\n\n${base}` : base;
         const reply = await generateAIResponse(prompt, history, conversationId, image, (acc) => {
           const now = Date.now();
           if (msgId && acc && now - last > 1300) {

@@ -42,30 +42,10 @@ async function run(req: NextRequest) {
   const dueTitles = due.slice(0, 4).map((t) => t.title);
 
   // Build the brief as clean lines/sections (Telegram renders \n and • bullets).
+  // NOTE: Oura readiness is intentionally NOT in the morning brief — the ring
+  // doesn't sync until she opens the app, so a 7am pull is yesterday's data.
+  // Readiness stays available on demand (ask Scout once it's synced).
   const lines: string[] = ["☀️ Good morning"];
-
-  // Body readiness from Oura, if connected — leads the brief so she knows the kind
-  // of day. Only present it as TODAY's if it actually is; otherwise Oura hasn't
-  // synced this morning and `latest` is yesterday's — say so instead of passing
-  // a stale number off as today's.
-  try {
-    const { getOuraData, ouraEnabled } = await import("@/lib/integrations/oura");
-    const { todayStr } = await import("@/lib/dates");
-    if (ouraEnabled()) {
-      const o = (await getOuraData(2))?.latest;
-      if (o?.readiness != null && o.date === todayStr()) {
-        const sleep = o.sleepHours != null ? `, slept ${o.sleepHours}h` : "";
-        const band = o.readiness >= 85 ? "well-recovered — good day to push" : o.readiness >= 70 ? "decent recovery" : "running low — take it easy";
-        lines.push("", `💪 Readiness ${o.readiness}${sleep} — ${band}.`);
-      } else if (o?.readiness != null) {
-        // Stale: latest is an earlier day. Show it as such + nudge a sync.
-        const sleep = o.sleepHours != null ? `, slept ${o.sleepHours}h` : "";
-        lines.push("", `💪 Today's readiness hasn't synced yet — open Oura to pull it in. (Last reading: ${o.readiness}${sleep}.)`);
-      }
-    }
-  } catch (err) {
-    console.error("morning oura failed", err);
-  }
 
   lines.push("", "📅 Today");
   if (events.length) for (const e of events.slice(0, 6)) lines.push(`• ${e}`);

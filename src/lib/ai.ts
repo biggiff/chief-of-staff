@@ -2110,6 +2110,7 @@ export async function generateAIResponse(
   const canThink = supportsThinking(model);
   let forcedAnswer = false;
   let guardRetried = false; // answer-guard fires at most once per turn
+  const writeConfirmations: string[] = []; // summaries of successful write actions
   for (let i = 0; i < 12; i++) {
     // Force the read on turn 0. tool_choice for a specific tool requires thinking
     // disabled, so we turn it off for just that call.
@@ -2146,6 +2147,15 @@ export async function generateAIResponse(
           toolsUsed.push(block.name);
           const result = await runTool(block.name, block.input as Record<string, unknown>, conversationId);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
+          // Remember confirmations from successful WRITE actions, so if the model
+          // later fails to compose a reply we can still confirm what actually
+          // happened instead of falsely reporting failure.
+          if (WRITE_TOOLS.has(block.name)) {
+            try {
+              const parsed = JSON.parse(result) as { ok?: boolean; summary?: string };
+              if (parsed?.ok && parsed.summary) writeConfirmations.push(parsed.summary);
+            } catch { /* non-JSON result — skip */ }
+          }
         }
       }
       messages.push({ role: "assistant", content: response.content });
@@ -2184,6 +2194,14 @@ export async function generateAIResponse(
     break;
   }
 
+  // The model couldn't compose a reply — but if actions actually succeeded, confirm
+  // THEM rather than falsely reporting failure (e.g. a reminder that really got set).
+  if (writeConfirmations.length) {
+    return {
+      content: writeConfirmations.join(" "),
+      metadata: { engine: "ai", model, toolsUsed, recoveredFromExhaustion: true, layer },
+    };
+  }
   return {
     content: "I worked through that but couldn't wrap it up cleanly — try rephrasing?",
     metadata: { engine: "ai", model, toolsUsed, exhausted: true, layer },

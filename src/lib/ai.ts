@@ -145,7 +145,7 @@ const OFFER_OR_QUESTION = /\b(want me to|should i|shall i|i can|i could|would yo
 const WRITE_TOOLS = new Set([
   "create_task", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder",
   "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item",
-  "log_attention", "create_idea", "add_idea_note", "capture_note", "reassign",
+  "log_attention", "create_idea", "add_idea_note", "capture_note", "capture_dev_note", "reassign",
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
   "promote_memory", "record_observation", "record_pushback", "save_checkin",
   "add_working_agreement", "start_workflow", "update_workflow_state",
@@ -228,6 +228,8 @@ Ideas: only for THIN sparks with no real detail. If there's substance, use captu
 No duplicate tasks: when create_task reports duplicateFound, do NOT create another — tell her that one's already on the list and ask if she really wants a second (force=true only after she confirms). Never create the same task repeatedly.
 
 Groceries: when she's adding things to buy ("add milk and eggs", "we need paper towels", "put bananas on the list"), use add_grocery_items (one call, pass each item) — NOT create_task. It auto-files each item into the right store section. Confirm by section, briefly ("Added — Produce: bananas; Dairy: milk, eggs"). If she corrects a placement ("chips go in Pantry", "that's not produce"), use recategorize_grocery_item so it sticks next time.
+
+Dev notes (about Scout itself): when she reports a bug in how YOU work or an idea to improve YOU — Scout, the app — that's for the developer, NOT a personal task or life idea. Triggers: messages starting "Dev:", "bug:", "for the build", "note for Claude/the code", or anything clearly about your own behavior ("you keep doing X", "it'd be better if you could Y"). Call capture_dev_note with the FULL note (preserve her detail). Confirm in one line ("Saved to your Dev Notes list"). Do NOT route these to create_task/create_idea — they go to capture_dev_note.
 
 Email (Gmail): you can read her mail across all folders (search_emails uses Gmail search syntax — use "in:anywhere" to include all folders/spam/trash, plus operators like from:, subject:, is:unread, newer_than:7d, label:), open a specific message (read_email), and create drafts (create_email_draft). SENDING is different: NEVER call send_email without her explicit go-ahead in the conversation. Default to writing the draft and asking "Want me to send it?" — only send_email after she clearly says yes. Summarize, don't dump raw headers.
 
@@ -527,6 +529,15 @@ const TOOLS: Anthropic.Tool[] = [
         occurred_dates: { type: "array", items: { type: "string" }, description: "Multiple YYYY-MM-DD dates to log at once (one event each) — for bulk backfill from a screenshot/calendar." },
       },
       required: ["role_name", "attention_type"],
+    },
+  },
+  {
+    name: "capture_dev_note",
+    description: "Save a note/bug/idea about SCOUT ITSELF (this app) for the developer to act on later — NOT a personal task or life idea. Use when she flags how Scout behaves/misbehaves or an improvement to Scout — typically messages starting 'Dev:', 'bug:', 'for the build', 'note for Claude', or clearly about Scout's own behavior. Capture the FULL note (don't summarize away detail). Files it to her 'Dev Notes' Todoist list. Confirm in one short line.",
+    input_schema: {
+      type: "object",
+      properties: { note: { type: "string", description: "The bug/idea about Scout, captured in full." } },
+      required: ["note"],
     },
   },
   {
@@ -1235,6 +1246,16 @@ async function runTool(
     const on = input.on === true;
     await setSetting("proof_mode", on ? "on" : "off");
     return j({ ok: true, proofMode: on ? "on" : "off", note: on ? "Proof Mode on — every factual claim will carry a [Source: …] tag." : "Proof Mode off." });
+  }
+
+  if (name === "capture_dev_note") {
+    const { ensureProjectWithSections, createTodoistTask, todoistEnabled } = await import("./integrations/todoist");
+    if (!todoistEnabled()) return j({ ok: false, error: "Todoist not connected." });
+    const note = String(input.note ?? "").trim();
+    if (!note) return j({ ok: false, error: "Empty note." });
+    const { projectId } = await ensureProjectWithSections("Dev Notes", []);
+    await createTodoistTask({ content: note, projectId });
+    return j({ ok: true, summary: `Saved to your Dev Notes list: "${note}"` });
   }
 
   if (name === "create_task") {
@@ -1959,7 +1980,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 }
 
 const LEAN_TOOL_NAMES = new Set([
-  "create_task", "move_task", "schedule_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention",
+  "create_task", "move_task", "schedule_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
   "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
 ]);
 

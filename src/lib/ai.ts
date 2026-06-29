@@ -142,6 +142,12 @@ const ACTION_CLAIM =
   /\b(done|added|created|scheduled|completed|logged|moved|deleted|removed|cancell?ed|set up|checked off|knocked (?:it |that )?out|marked (?:it |that )?(?:done|complete|completed)|put (?:it|that|them) (?:on|in)|added (?:it|that|them)|i'?ve (?:added|created|scheduled|set|logged|moved|completed|put|sent|drafted))\b/i;
 // If the reply is offering/asking (not claiming), don't flag it.
 const OFFER_OR_QUESTION = /\b(want me to|should i|shall i|i can|i could|would you like|do you want|let me know if|i'?ll |i will )\b/i;
+// The guard ONLY makes sense when she actually asked Scout to DO something this
+// turn. If she asked a question / to "talk about" / "what's on my list", there's
+// no action to fabricate — describing the list (which mentions "removed/done")
+// must never trip the guard. Requires an imperative-to-change-state verb.
+const USER_ACTION_REQUEST =
+  /\b(add|remove|delete|take\s+\w+\s+off|take off|complete|finish|mark|cross off|knock out|schedule|set up|move|cancel|drop|create|put|log|snooze|reschedule|remind|text me|send|draft|file it|save it|capture|rename|reassign)\b/i;
 // Tools that actually CHANGE something. A claim of action is only credible if one ran.
 const WRITE_TOOLS = new Set([
   "create_task", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder", "snooze_reminder",
@@ -153,8 +159,11 @@ const WRITE_TOOLS = new Set([
   "create_email_draft", "send_email", "set_step_goal", "set_proof_mode", "sync_todoist", "undo_last",
 ]);
 
-/** True if the reply asserts an action was taken but no write tool actually ran. */
-function fabricatedActionClaim(text: string, toolsUsed: string[]): boolean {
+/** True if the reply asserts a FRESH action was taken but no write tool actually
+ *  ran — AND she actually asked Scout to do something this turn. Questions and
+ *  "talk about my list" requests never trip it (no action to fabricate). */
+function fabricatedActionClaim(userText: string, text: string, toolsUsed: string[]): boolean {
+  if (!USER_ACTION_REQUEST.test(userText)) return false; // she didn't ask for an action
   if (!ACTION_CLAIM.test(text) || OFFER_OR_QUESTION.test(text)) return false;
   return !toolsUsed.some((t) => WRITE_TOOLS.has(t));
 }
@@ -2277,7 +2286,7 @@ export async function generateAIResponse(
       // Answer-guard (soft, once): if the reply claims it DID something but no
       // write tool ran this turn, it's likely fabricating — make it either do the
       // action for real or stop claiming it. Single retry; then accept the result.
-      if (!guardRetried && fabricatedActionClaim(text, toolsUsed)) {
+      if (!guardRetried && fabricatedActionClaim(userText, text, toolsUsed)) {
         guardRetried = true;
         messages.push({ role: "assistant", content: response.content });
         messages.push({

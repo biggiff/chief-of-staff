@@ -1962,6 +1962,51 @@ const FULL_TRIGGERS =
 /** Parse an explicit/known grocery add into items, or null if it isn't one. */
 const DEV_PREFIX = /^\s*(?:dev|bug)\b\s*[:\-]/i;
 
+// Friendly "here's what I'm doing" labels for the live status trail (Telegram).
+// Generated in CODE from the tool name — no model tokens, no added latency.
+const STATUS_LABELS: Record<string, string> = {
+  get_calendar: "📅 Checked your calendar",
+  get_calendar_today: "📅 Checked your calendar",
+  create_calendar_event: "📅 Added to your calendar",
+  list_calendars: "📅 Looked at your calendars",
+  get_todoist_tasks: "✅ Pulled your tasks",
+  sync_todoist: "🔄 Synced your tasks",
+  create_task: "✅ Added a task",
+  complete_task: "✅ Marked it done",
+  move_task: "↪️ Moved a task",
+  add_grocery_items: "🛒 Updated your grocery list",
+  recategorize_grocery_item: "🛒 Re-filed a grocery item",
+  schedule_reminder: "⏰ Set a reminder",
+  snooze_reminder: "⏰ Rescheduled the check-back",
+  confirm_reminder: "✅ Closed that loop",
+  cancel_reminder: "🚫 Dropped that reminder",
+  list_reminders: "⏰ Checked your reminders",
+  search_emails: "📧 Searched your email",
+  read_email: "📧 Read an email",
+  list_email_labels: "📧 Checked your email labels",
+  create_email_draft: "✍️ Drafted an email",
+  send_email: "📨 Sent the email",
+  get_oura: "💪 Read your Oura data",
+  get_workouts: "🏋️ Checked your workouts",
+  capture_note: "📝 Saved a note",
+  capture_dev_note: "🛠️ Saved a dev note",
+  search_knowledge: "🔎 Searched your notes",
+  answer_about: "🔎 Looked across your data",
+  get_compass_overview: "🧭 Reviewed your projects & roles",
+  search_crossroads: "🧭 Checked open decisions",
+  get_crossroad: "🧭 Opened a decision",
+  get_activity: "📊 Checked your activity",
+  get_attention_history: "📊 Checked your history",
+  get_checkins: "📊 Checked your check-ins",
+  create_idea: "💡 Captured an idea",
+  add_idea_note: "💡 Added to an idea",
+  log_attention: "📊 Logged that",
+  reassign: "↪️ Re-tagged it",
+};
+function statusLabel(tool: string): string {
+  return STATUS_LABELS[tool] ?? `⚙️ ${tool.replace(/_/g, " ")}`;
+}
+
 function parseGroceryAdd(text: string): string[] | null {
   const t = text.trim();
   if (DEV_PREFIX.test(t)) return null; // dev notes are never grocery, even if they mention food
@@ -2119,7 +2164,8 @@ export async function generateAIResponse(
   history: HistoryMsg[] = [],
   conversationId: string | null = null,
   image?: { data: string; mediaType: string },
-  onDelta?: (accumulated: string) => void
+  onDelta?: (accumulated: string) => void,
+  onStatus?: (label: string) => void
 ): Promise<ChiefResponse> {
   const client = new Anthropic();
   // Layer classifier: L1 (default) is lean; L2/L3 invite the dormant intelligence.
@@ -2203,6 +2249,7 @@ export async function generateAIResponse(
       for (const block of response.content) {
         if (block.type === "tool_use") {
           toolsUsed.push(block.name);
+          if (onStatus) onStatus(statusLabel(block.name));
           const result = await runTool(block.name, block.input as Record<string, unknown>, conversationId);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
           // Remember confirmations from successful WRITE actions, so if the model

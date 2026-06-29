@@ -119,27 +119,50 @@ export async function POST(req: NextRequest) {
         await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: fast.content, metadataJson: fast.metadata });
         await sendTelegram(chatId, fast.content);
       } else if (aiEnabled()) {
-        // STREAM: send a placeholder, then live-edit it as the answer generates.
+        // STREAM with a stay-visible "working" trail: status lines (one per tool,
+        // generated in code — no extra tokens) accumulate above the final answer,
+        // so she sees what Scout actually did. Edits are SERIALIZED + de-duped so a
+        // stray partial can't land after the final, and identical edits are skipped.
         const msgId = await sendTelegramMessage(chatId, image ? "👀 looking…" : "…").catch(() => null);
-        // Edits are SERIALIZED through a single chain (and throttled), so a stray
-        // mid-stream partial can never land after the final complete text.
         let chain: Promise<void> = Promise.resolve();
-        let last = 0;
+        let lastEdit = 0;
+        let lastSent = "";
+        const steps: string[] = [];
+        let answer = "";
+        const render = () => {
+          const trail = steps.join("\n");
+          const body = answer.trim();
+          return [trail, body].filter(Boolean).join(trail && body ? "\n—\n" : "") || "…";
+        };
+        const pushEdit = (force = false) => {
+          if (!msgId) return;
+          const now = Date.now();
+          if (!force && now - lastEdit < 1000) return;
+          const snapshot = render();
+          if (snapshot === lastSent) return;
+          lastEdit = now;
+          lastSent = snapshot;
+          chain = chain.then(() => editTelegramMessage(chatId, msgId, snapshot));
+        };
         const base = effectivePrompt || "Take a look at this photo — what is it, and is there anything I should capture or do with it?";
         const prompt = imageRecalled ? `(Using the image she sent a moment ago — it's attached.)\n\n${base}` : base;
-        const reply = await generateAIResponse(prompt, history, conversationId, image, (acc) => {
-          const now = Date.now();
-          if (msgId && acc && now - last > 1300) {
-            last = now;
-            chain = chain.then(() => editTelegramMessage(chatId, msgId, acc));
-          }
-        });
+        const reply = await generateAIResponse(
+          prompt,
+          history,
+          conversationId,
+          image,
+          (acc) => { answer = acc; pushEdit(); },
+          (label) => { if (steps[steps.length - 1] !== label) steps.push(label); answer = ""; pushEdit(true); }
+        );
         await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: reply.content, metadataJson: reply.metadata });
+        const finalText = steps.length
+          ? `${steps.join("\n")}\n—\n${reply.content || "Done."}`
+          : reply.content || "…";
         if (msgId) {
-          await chain; // let any queued partial edits finish first
-          await editTelegramMessage(chatId, msgId, reply.content || "…"); // final wins
+          await chain; // let queued edits finish first
+          if (finalText !== lastSent) await editTelegramMessage(chatId, msgId, finalText); // trail + answer wins
         } else {
-          await sendTelegram(chatId, reply.content);
+          await sendTelegram(chatId, finalText);
         }
       } else {
         // No AI key — rule-based fallback.

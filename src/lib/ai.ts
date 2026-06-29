@@ -1960,9 +1960,12 @@ const FULL_TRIGGERS =
   /\b(why|reflect|think through|figur(?:e|ing) out|feel|focus on|what'?s going on|catch me up|should i|pattern|avoid|how am i|my life|mandy|relationship|intimacy|health|overwhelm|wrestl|stuck|going back and forth|weekly review|help me)\b/i;
 
 /** Parse an explicit/known grocery add into items, or null if it isn't one. */
+const DEV_PREFIX = /^\s*(?:dev|bug)\b\s*[:\-]/i;
+
 function parseGroceryAdd(text: string): string[] | null {
   const t = text.trim();
-  const m = t.match(/^(?:add|get|grab|buy|need|pick up|put)\s+(.+?)(?:\s+(?:to|on)\s+(?:the\s+)?(?:grocery|groceries|grocery list|shopping list|shopping|costco|costco list|list))?[.!]?$/i);
+  if (DEV_PREFIX.test(t)) return null; // dev notes are never grocery, even if they mention food
+  const m = t.match(/^(?:(?:i|we)\s+(?:need|want|gotta|have)\s+(?:to\s+)?(?:(?:buy|get|grab|pick\s*up|purchase)\s+)?|(?:add|get|grab|buy|need|pick\s*up|put)\s+)(.+?)(?:\s+(?:to|on)\s+(?:the\s+)?(?:grocery|groceries|grocery list|shopping list|shopping|costco|costco list|list))?[.!]?$/i);
   if (!m) return null;
   const items = m[1].split(/,|\band\b|&|\+/i).map((s) => s.trim()).filter(Boolean);
   if (!items.length || items.length > 12) return null;
@@ -2065,6 +2068,23 @@ export async function fastGrocery(userText: string): Promise<ChiefResponse | nul
   }
 }
 
+/** Deterministic dev-note capture (no model). A message that starts with "Dev:"
+ *  or "bug:" is ALWAYS a note about Scout for the developer — file it straight to
+ *  the Dev Notes list so the model can never re-route it (e.g. grocery-grab a food
+ *  word out of it). Exported so the Telegram path can short-circuit it too. */
+export async function fastDevNote(userText: string, conversationId: string | null = null): Promise<ChiefResponse | null> {
+  if (!DEV_PREFIX.test(userText)) return null;
+  const note = userText.replace(DEV_PREFIX, "").trim();
+  if (!note) return null;
+  try {
+    const parsed = JSON.parse(await runTool("capture_dev_note", { note }, conversationId)) as { ok?: boolean; summary?: string };
+    if (!parsed.ok) return null;
+    return { content: parsed.summary || "Saved to your Dev Notes list.", metadata: { engine: "fast-devnote" } };
+  } catch {
+    return null;
+  }
+}
+
 export async function fastPath(
   userText: string,
   history: HistoryMsg[],
@@ -2072,6 +2092,11 @@ export async function fastPath(
   image?: { data: string; mediaType: string }
 ): Promise<ChiefResponse | null> {
   if (image || !userText.trim()) return null;
+
+  // Dev/bug notes are deterministic and win over everything else.
+  const dev = await fastDevNote(userText, conversationId);
+  if (dev) return dev;
+
   const lane = classifyFast(userText);
 
   if (lane === "grocery") {

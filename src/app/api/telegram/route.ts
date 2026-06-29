@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { eq, desc } from "drizzle-orm";
 import { db, conversations, messages } from "@/db";
-import { fastGrocery, generateAIResponse } from "@/lib/ai";
+import { fastGrocery, fastDevNote, generateAIResponse } from "@/lib/ai";
 import { aiEnabled } from "@/lib/ai";
 import { generateChiefResponse } from "@/lib/chat-engine";
 import { telegramEnabled, isAllowedChat, webhookSecretOk, sendTelegram, sendTelegramMessage, editTelegramMessage, getTelegramFile } from "@/lib/integrations/telegram";
@@ -112,11 +112,12 @@ export async function POST(req: NextRequest) {
         else if (imageRecalled) imageRecalled = false; // recall failed → don't claim we have it
       }
 
-      // Instant deterministic grocery adds — text-only, no model/streaming.
-      const groc = !image && aiEnabled() ? await fastGrocery(userText) : null;
-      if (groc) {
-        await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: groc.content, metadataJson: groc.metadata });
-        await sendTelegram(chatId, groc.content);
+      // Instant deterministic shortcuts (text-only): dev/bug notes win first, then
+      // grocery adds — both bypass the model so a food word can't be mis-routed.
+      const fast = !image && aiEnabled() ? (await fastDevNote(userText, conversationId)) ?? (await fastGrocery(userText)) : null;
+      if (fast) {
+        await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: fast.content, metadataJson: fast.metadata });
+        await sendTelegram(chatId, fast.content);
       } else if (aiEnabled()) {
         // STREAM: send a placeholder, then live-edit it as the answer generates.
         const msgId = await sendTelegramMessage(chatId, image ? "👀 looking…" : "…").catch(() => null);

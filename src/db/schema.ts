@@ -420,6 +420,9 @@ export const appSettings = pgTable("app_settings", {
 export const reminders = pgTable("reminders", {
   id: uuid("id").primaryKey().defaultRandom(),
   text: text("text").notNull(),
+  // Optional extra context surfaced WITH the reminder when it fires: a link, an
+  // address, notes — so the reminder arrives actionable, not just a bare title.
+  details: text("details"),
   remindAt: timestamp("remind_at", { withTimezone: true }).notNull(), // next fire time
   // null = one-shot. Otherwise repeats: daily | weekdays | weekly | monthly.
   // A recurring reminder stays "pending" and remindAt advances after each fire.

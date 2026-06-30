@@ -54,7 +54,7 @@ async function run(req: NextRequest) {
     const open = await openCommitments(5);
     if (open.length) {
       lines.push("", "🎯 Still open");
-      for (const c of open) lines.push(`• ${c.text}`);
+      for (const c of open) lines.push(`• ${c.text}${c.details ? `\n  ${c.details}` : ""}`);
       lines.push('Reply "done", "too big", or "drop it" on any.');
     }
   } catch (err) {

@@ -688,6 +688,7 @@ const TOOLS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         text: { type: "string", description: "What the reminder should say to her (e.g. 'Call the dentist')." },
+        details: { type: "string", description: "Extra context to surface WITH the reminder when it fires — a LINK she pasted, an address, a phone number, or notes. ALWAYS capture a URL she gives here (don't drop it from the title). Omit if there's nothing extra." },
         at: { type: "string", description: "First occurrence, absolute local time 24h: 'YYYY-MM-DDTHH:mm' in her timezone." },
         repeat: { type: "string", enum: ["daily", "weekdays", "weekly", "monthly"], description: "Omit for one-shot. 'weekly' repeats on the same weekday as `at`; 'monthly' on the same day-of-month." },
         follow_up: { type: "boolean", description: "True = check back if she hasn't confirmed it's done (one-shot only). Only when she wants it or agrees to your offer." },
@@ -1241,7 +1242,7 @@ async function runTool(
     }
     const wantsFollowUp = input.follow_up === true || !!followUpFirstAt;
     const followUpAfterMinutes = wantsFollowUp ? Math.round(((input.follow_up_after_hours as number) ?? (followUpFirstAt ? 24 : 4)) * 60) : null;
-    const { summary } = await createReminder({ text: input.text as string, remindAt: when, recurrence: repeat ?? null, followUpAfterMinutes, followUpFirstAt, conversationId });
+    const { summary } = await createReminder({ text: input.text as string, details: (input.details as string) ?? null, remindAt: when, recurrence: repeat ?? null, followUpAfterMinutes, followUpFirstAt, conversationId });
     return j({ ok: true, summary, at: formatWhen(when), repeats: repeat ?? null, followUp: wantsFollowUp, checkBackAt: followUpFirstAt ? formatWhen(followUpFirstAt) : null });
   }
 

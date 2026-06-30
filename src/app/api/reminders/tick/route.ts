@@ -33,6 +33,8 @@ async function run(req: NextRequest) {
     } else {
       body = `Still open: "${r.text}". What's blocking it? ${opts} ("too big" → I'll shrink it to a 2-minute start; "drop it" → I'll let it go, no guilt.)`;
     }
+    // Surface the saved context (link/address/notes) so it arrives actionable.
+    if (r.details) body += `\n${r.details}`;
     const res = await notifyOwner(body);
     if (!res.ok) { console.error("reminder send failed", r.id, res.error); continue; }
     sent++;

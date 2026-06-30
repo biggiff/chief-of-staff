@@ -1336,6 +1336,7 @@ export async function proofModeOn(): Promise<boolean> {
 export async function createReminder(input: {
   text: string;
   remindAt: Date;
+  details?: string | null; // link / address / notes surfaced WITH the reminder
   recurrence?: "daily" | "weekdays" | "weekly" | "monthly" | null;
   followUpAfterMinutes?: number | null; // relative: check back N min after the reminder fires
   followUpFirstAt?: Date | null; // absolute: first check-back at this exact time
@@ -1350,6 +1351,7 @@ export async function createReminder(input: {
     .insert(remindersTable)
     .values({
       text: input.text.slice(0, 1000),
+      details: input.details?.slice(0, 2000) ?? null,
       remindAt: input.remindAt,
       recurrence: input.recurrence ?? null,
       followUpAfterMinutes: intervalMin,
@@ -1448,7 +1450,7 @@ export async function openCommitments(limit = 8) {
     .where(and(eq(remindersTable.status, "pending"), eq(remindersTable.awaitingConfirm, true)))
     .orderBy(remindersTable.remindAt)
     .limit(limit);
-  return rows.map((r) => ({ id: r.id, text: r.text }));
+  return rows.map((r) => ({ id: r.id, text: r.text, details: r.details ?? null }));
 }
 
 /** Reschedule an existing reminder/commitment's next check to a later time

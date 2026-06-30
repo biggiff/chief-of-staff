@@ -151,7 +151,7 @@ const USER_ACTION_REQUEST =
 // Tools that actually CHANGE something. A claim of action is only credible if one ran.
 const WRITE_TOOLS = new Set([
   "create_task", "add_steps", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder", "snooze_reminder",
-  "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item", "send_to_frys",
+  "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item", "clear_grocery_items", "send_to_frys",
   "log_attention", "create_idea", "add_idea_note", "capture_note", "capture_dev_note", "reassign",
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
   "promote_memory", "record_observation", "record_pushback", "save_checkin",
@@ -239,7 +239,7 @@ Ideas: only for THIN sparks with no real detail. If there's substance, use captu
 
 No duplicate tasks: when create_task reports duplicateFound, do NOT create another — tell her that one's already on the list and ask if she really wants a second (force=true only after she confirms). Never create the same task repeatedly.
 
-Groceries: when she's adding things to buy ("add milk and eggs", "we need paper towels", "put bananas on the list"), use add_grocery_items (one call, pass each item) — NOT create_task. It auto-files each item into the right store section. Confirm by section, briefly ("Added — Produce: bananas; Dairy: milk, eggs"). If she corrects a placement ("chips go in Pantry", "that's not produce"), use recategorize_grocery_item so it sticks next time.
+Groceries: when she's adding things to buy ("add milk and eggs", "we need paper towels", "put bananas on the list"), use add_grocery_items (one call, pass each item) — NOT create_task. It auto-files each item into the right store section. Confirm by section, briefly ("Added — Produce: bananas; Dairy: milk, eggs"). If she corrects a placement ("chips go in Pantry", "that's not produce"), use recategorize_grocery_item so it sticks next time. To send the list to Fry's for pickup, use send_to_frys. AFTER send_to_frys succeeds, OFFER to clear the items off her grocery list ("want me to clear those off your list?") — and ONLY if she says yes, call clear_grocery_items with the item names that made it into the cart (the result's added items), leaving anything not found since she still needs to get those elsewhere. Never clear the list without her go-ahead.
 
 Dev notes (about Scout itself): when she reports a bug in how YOU work or an idea to improve YOU — Scout, the app — that's for the developer, NOT a personal task or life idea. Triggers: messages starting "Dev:", "bug:", "for the build", "note for Claude/the code", or anything clearly about your own behavior ("you keep doing X", "it'd be better if you could Y"). Call capture_dev_note with the FULL note (preserve her detail). Confirm in one line ("Saved to your Dev Notes list"). Do NOT route these to create_task/create_idea — they go to capture_dev_note.
 
@@ -605,6 +605,14 @@ const TOOLS: Anthropic.Tool[] = [
     name: "send_to_frys",
     description: "Load her current Grocery List into her Fry's (Kroger) pickup cart, picking the BEST-VALUE option for each item (lowest price per unit — usually the store brand in a sensible size). Use when she says 'send my groceries to Fry's', 'add my list to my Fry's cart', or 'order my groceries for pickup'. The result's `added` lists each item with the exact product chosen and its price, plus a `total`. Confirm by showing what it picked + the estimated total, note anything in `notFound`, and remind her to open the Fry's app to pick a pickup time. If the result is needsAuth, tell her Fry's needs a one-time connect first.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "clear_grocery_items",
+    description: "Mark grocery items done / clear them off the list — typically AFTER sending the list to Fry's, once she confirms. Pass `items` (the item names to clear — usually the ones that made it into the cart) to clear just those and LEAVE anything that wasn't found; omit `items` to clear the whole list. `list`: 'grocery' (default) or 'costco'. ALWAYS confirm with her before calling this — never clear the list on your own.",
+    input_schema: {
+      type: "object",
+      properties: { items: { type: "array", items: { type: "string" }, description: "Item names to clear; omit to clear the whole list." }, list: { type: "string", enum: ["grocery", "costco"] } },
+    },
   },
   {
     name: "recategorize_grocery_item",
@@ -1394,6 +1402,20 @@ async function runTool(
     return j({ ok: r.ok, added: r.added, notFound: r.notFound, count: r.added.length, total: r.total, error: r.error });
   }
 
+  if (name === "clear_grocery_items") {
+    const { resolveProjectAndSections, listActiveTasksInProject, closeTodoistTask } = await import("./integrations/todoist");
+    const list = (input.list as "grocery" | "costco") ?? "grocery";
+    const projName = list === "costco" ? "Costco List" : "Grocery List";
+    const proj = await resolveProjectAndSections(projName);
+    if (!proj) return j({ ok: false, error: `Couldn't find your ${projName}.` });
+    const tasks = await listActiveTasksInProject(proj.projectId);
+    const wanted = (input.items as string[] | undefined)?.map((s) => String(s).toLowerCase().trim()).filter(Boolean);
+    const toClose = wanted?.length ? tasks.filter((t) => wanted.includes(t.content.toLowerCase().trim())) : tasks;
+    let cleared = 0;
+    for (const t of toClose) { try { await closeTodoistTask(t.id); cleared++; } catch { /* skip a failed close */ } }
+    return j({ ok: true, cleared, remaining: tasks.length - cleared, list: projName });
+  }
+
   if (name === "recategorize_grocery_item") {
     return j(await recategorizeGrocery(input.item as string, input.section as string, (input.list as "grocery" | "costco") ?? "grocery"));
   }
@@ -2100,7 +2122,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 
 const LEAN_TOOL_NAMES = new Set([
   "create_task", "add_steps", "move_task", "schedule_reminder", "snooze_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
-  "add_grocery_items", "recategorize_grocery_item", "send_to_frys", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
+  "add_grocery_items", "recategorize_grocery_item", "clear_grocery_items", "send_to_frys", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
 ]);
 
 const LEAN_SYSTEM = `${SCOUT_VOICE}

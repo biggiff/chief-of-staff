@@ -603,7 +603,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "send_to_frys",
-    description: "Load her current Grocery List into her Fry's (Kroger) pickup cart. Use when she says things like 'send my groceries to Fry's', 'add my list to my Fry's cart', or 'order my groceries for pickup'. Afterward she opens the Fry's app to pick a pickup time. Reports what was added and anything that couldn't be matched. If the result is needsAuth, tell her Fry's needs a one-time connect first (she'll do it on her computer).",
+    description: "Load her current Grocery List into her Fry's (Kroger) pickup cart, picking the BEST-VALUE option for each item (lowest price per unit — usually the store brand in a sensible size). Use when she says 'send my groceries to Fry's', 'add my list to my Fry's cart', or 'order my groceries for pickup'. The result's `added` lists each item with the exact product chosen and its price, plus a `total`. Confirm by showing what it picked + the estimated total, note anything in `notFound`, and remind her to open the Fry's app to pick a pickup time. If the result is needsAuth, tell her Fry's needs a one-time connect first.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -1391,7 +1391,7 @@ async function runTool(
     if (!items.length) return j({ ok: true, empty: true, summary: "Your Grocery List is empty — nothing to send." });
     const r = await sendToFrysCart(items);
     if (r.error === "needs_auth") return j({ ok: false, needsAuth: true });
-    return j({ ok: r.ok, added: r.added, notFound: r.notFound, count: r.added.length, error: r.error });
+    return j({ ok: r.ok, added: r.added, notFound: r.notFound, count: r.added.length, total: r.total, error: r.error });
   }
 
   if (name === "recategorize_grocery_item") {

@@ -11,6 +11,10 @@
     {
       "path": "/api/reminders/tick",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/inbox/scan",
+      "schedule": "0 18 * * *"
     }
   ]
 }

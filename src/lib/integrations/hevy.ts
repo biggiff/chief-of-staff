@@ -40,6 +40,20 @@ export async function getRecentWorkouts(count = 10): Promise<
   }));
 }
 
+/** Consistency stats for the accountability nudge. `todayYmd` is YYYY-MM-DD in
+ *  her timezone (passed in to keep this module date-lib-free). */
+export async function getWorkoutStats(todayYmd: string): Promise<{ lastDate: string | null; daysSince: number | null; last7: number }> {
+  const ws = await getRecentWorkouts(10).catch(() => []);
+  const dates = ws.map((w) => w.date).filter(Boolean).sort(); // ascending YYYY-MM-DD
+  if (!dates.length) return { lastDate: null, daysSince: null, last7: 0 };
+  const todayMs = Date.parse(`${todayYmd}T00:00:00Z`);
+  const lastDate = dates[dates.length - 1];
+  const daysSince = Math.round((todayMs - Date.parse(`${lastDate}T00:00:00Z`)) / 86_400_000);
+  const weekAgo = todayMs - 7 * 86_400_000;
+  const last7 = dates.filter((d) => Date.parse(`${d}T00:00:00Z`) >= weekAgo).length;
+  return { lastDate, daysSince, last7 };
+}
+
 /** Saved routines (names + exercises) — what she's planning to train. */
 export async function getRoutines(): Promise<{ title: string; exercises: string[] }[]> {
   if (!hevyEnabled()) return [];

@@ -156,7 +156,7 @@ const WRITE_TOOLS = new Set([
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
   "promote_memory", "record_observation", "record_pushback", "save_checkin",
   "add_working_agreement", "start_workflow", "update_workflow_state",
-  "create_email_draft", "send_email", "set_step_goal", "set_proof_mode", "sync_todoist", "undo_last",
+  "create_email_draft", "send_email", "set_step_goal", "set_workout_goal", "set_proof_mode", "sync_todoist", "undo_last",
 ]);
 
 /** True if the reply asserts a FRESH action was taken but no write tool actually
@@ -211,6 +211,8 @@ EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers mus
 WEEKLY REVIEW / CHECK-IN: when she asks for her "weekly review", "weekly check-in", or "how was my week", you MUST call get_weekly_review and answer from what it returns — NEVER compose a weekly review from memory or earlier in the conversation. The tool regenerates live from Compass; anything you'd say from memory is stale and will contradict what she just told you. No exceptions.
 
 REMINDER FOLLOW-UPS (accountability loop — she has asked you to be FIRM BUT KIND; she tends to not-see / defer / freeze-on-big / forget): (a) When she sets a reminder and says anything like "check back", "follow up", "make sure I do it", "hold me accountable", "don't let me forget", or "if I don't/haven't" → set follow_up=true on schedule_reminder. For a one-shot that's clearly a real commitment she's been avoiding, OFFER it ("want me to check back if you haven't?") and set it if she agrees. (b) Replying to a check-back, there are FOUR answers — handle each: "done / did it / taken care of" → confirm_reminder (closes the loop). "drop it / never mind / let it go" → cancel_reminder (clean release, no guilt). "not yet / haven't" → do NOT just say ok: respond warmly, ask ONE short question about what's actually blocking it, and if she names a later time use snooze_reminder to move the next check there; otherwise leave it (it will resurface). "too big / overwhelming / too much" → break it into the SMALLEST 2-minute first step, state that step, and re-commit to just that (snooze_reminder to a soon time, or schedule_reminder for the small step) — shrink, don't drop. Never shame; always keep the easy exit open. confirm = she did it; cancel = she's abandoning it; snooze = she's deferring (stays alive).
+
+WORKOUT CONSISTENCY: Scout sends a daily-ish nudge if she hasn't logged a workout in Hevy for a while (she set a per-week goal via set_workout_goal). When she replies to a workout nudge: "done / did it / worked out" → just acknowledge warmly and briefly (the actual log lives in Hevy, nothing to record here) — you can call get_workouts to confirm/celebrate the streak if natural. "rest / rest day / taking it easy" → affirm it (rest is part of training, no guilt); the nudge already eases off for a couple days. If she asks how consistent she's been, use get_workouts. Don't lecture or use motivational-poster language — grounded and short ("Nice, that's 3 this week.").
 
 TASK BREAKDOWN (anti-overwhelm — she freezes when something feels too big): when she says a thing feels too big / "where do I start" / "help me break down X" / "I'm overwhelmed by Y", or replies "too big" to a check-back — do NOT just sympathize or restate it. Break it into 3–7 CONCRETE do-now steps, each small enough to start in a couple minutes and phrased as a verb + specific object ("text Tanya the COI", not "deal with the rental"). LEAD with the single smallest first step so she can start this second. Then offer to save the steps as tasks (add_steps) — and if it's something she's been avoiding, offer a check-back on just that first step. The goal is to make STARTING feel tiny, not to produce a thorough plan.
 
@@ -886,6 +888,11 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { goal: { type: "number" } }, required: ["goal"] },
   },
   {
+    name: "set_workout_goal",
+    description: "Set how many workouts per WEEK she's aiming for (drives the consistency nudges that check Hevy). Use when she says 'I want to work out 3x a week', 'my goal is 4 workouts a week', etc.",
+    input_schema: { type: "object", properties: { per_week: { type: "number" } }, required: ["per_week"] },
+  },
+  {
     name: "get_oura",
     description: "Read her Oura ring data — sleep, readiness, and activity scores (and sleep hours, steps), latest + recent trend. Use for 'how did I sleep', 'what's my readiness', 'how am I recovering', or to ground anything about her body/energy/Health in real data instead of guessing. Default ~7 days.",
     input_schema: { type: "object", properties: { days: { type: "number" } } },
@@ -1204,6 +1211,12 @@ async function runTool(
     const goal = Math.max(1000, Math.round(input.goal as number));
     await setSetting("step_goal", String(goal));
     return j({ ok: true, summary: `Daily step goal set to ${goal.toLocaleString()}. I'll pace your nudges to that.` });
+  }
+
+  if (name === "set_workout_goal") {
+    const perWeek = Math.max(1, Math.min(7, Math.round(input.per_week as number)));
+    await setSetting("workout_goal", String(perWeek));
+    return j({ ok: true, summary: `Got it — aiming for ${perWeek} workout${perWeek === 1 ? "" : "s"} a week. I'll nudge you if you go quiet, and ease off on rest days.` });
   }
 
   if (name === "add_steps") {

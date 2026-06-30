@@ -150,7 +150,7 @@ const USER_ACTION_REQUEST =
   /\b(add|remove|delete|take\s+\w+\s+off|take off|complete|finish|mark|cross off|knock out|schedule|set up|move|cancel|drop|create|put|log|snooze|reschedule|remind|text me|send|draft|file it|save it|capture|rename|reassign)\b/i;
 // Tools that actually CHANGE something. A claim of action is only credible if one ran.
 const WRITE_TOOLS = new Set([
-  "create_task", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder", "snooze_reminder",
+  "create_task", "add_steps", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder", "snooze_reminder",
   "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item",
   "log_attention", "create_idea", "add_idea_note", "capture_note", "capture_dev_note", "reassign",
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
@@ -211,6 +211,8 @@ EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers mus
 WEEKLY REVIEW / CHECK-IN: when she asks for her "weekly review", "weekly check-in", or "how was my week", you MUST call get_weekly_review and answer from what it returns — NEVER compose a weekly review from memory or earlier in the conversation. The tool regenerates live from Compass; anything you'd say from memory is stale and will contradict what she just told you. No exceptions.
 
 REMINDER FOLLOW-UPS (accountability loop — she has asked you to be FIRM BUT KIND; she tends to not-see / defer / freeze-on-big / forget): (a) When she sets a reminder and says anything like "check back", "follow up", "make sure I do it", "hold me accountable", "don't let me forget", or "if I don't/haven't" → set follow_up=true on schedule_reminder. For a one-shot that's clearly a real commitment she's been avoiding, OFFER it ("want me to check back if you haven't?") and set it if she agrees. (b) Replying to a check-back, there are FOUR answers — handle each: "done / did it / taken care of" → confirm_reminder (closes the loop). "drop it / never mind / let it go" → cancel_reminder (clean release, no guilt). "not yet / haven't" → do NOT just say ok: respond warmly, ask ONE short question about what's actually blocking it, and if she names a later time use snooze_reminder to move the next check there; otherwise leave it (it will resurface). "too big / overwhelming / too much" → break it into the SMALLEST 2-minute first step, state that step, and re-commit to just that (snooze_reminder to a soon time, or schedule_reminder for the small step) — shrink, don't drop. Never shame; always keep the easy exit open. confirm = she did it; cancel = she's abandoning it; snooze = she's deferring (stays alive).
+
+TASK BREAKDOWN (anti-overwhelm — she freezes when something feels too big): when she says a thing feels too big / "where do I start" / "help me break down X" / "I'm overwhelmed by Y", or replies "too big" to a check-back — do NOT just sympathize or restate it. Break it into 3–7 CONCRETE do-now steps, each small enough to start in a couple minutes and phrased as a verb + specific object ("text Tanya the COI", not "deal with the rental"). LEAD with the single smallest first step so she can start this second. Then offer to save the steps as tasks (add_steps) — and if it's something she's been avoiding, offer a check-back on just that first step. The goal is to make STARTING feel tiny, not to produce a thorough plan.
 
 This applies to META / SYSTEM-PHRASED questions too — not just natural ones. Questions about what Compass contains or whether something is empty/blank MUST trigger a real query before you answer; never answer them from base context or assumption. Examples and routing: "is the crossroads system empty?" / "what crossroads exist?" → search_crossroads; "what do you know about Coach?" / "what did we store about Gifford & Co.?" → answer_about(that topic) (and get_memories if relevant); "what active projects exist?" / "what's in Compass?" → get_compass_overview. NEVER say a role, project, crossroad, or "the system" is empty/blank/unknown unless you JUST queried it and it genuinely came back empty. If a role or project has a description, mission, desired state, or outcome (these now appear in your context and in answer_about), use that content — do not call it blank.
 
@@ -564,6 +566,15 @@ const TOOLS: Anthropic.Tool[] = [
         force: { type: "boolean", description: "Create even if a similar open task exists (only after the user confirms)." },
       },
       required: ["title"],
+    },
+  },
+  {
+    name: "add_steps",
+    description: "Save a broken-down list of concrete next-steps as individual Todoist tasks at once — use AFTER you've broken an overwhelming task into small steps and she wants them captured. `steps` = the step texts (keep each tiny + actionable); `project_name` optional to file them together. Returns how many landed and where.",
+    input_schema: {
+      type: "object",
+      properties: { steps: { type: "array", items: { type: "string" } }, project_name: { type: "string", description: "Existing Todoist project to file the steps into. Omit for Inbox." } },
+      required: ["steps"],
     },
   },
   {
@@ -1180,6 +1191,26 @@ async function runTool(
     const goal = Math.max(1000, Math.round(input.goal as number));
     await setSetting("step_goal", String(goal));
     return j({ ok: true, summary: `Daily step goal set to ${goal.toLocaleString()}. I'll pace your nudges to that.` });
+  }
+
+  if (name === "add_steps") {
+    const steps = ((input.steps as string[]) ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 12);
+    if (!steps.length) return j({ ok: false, error: "No steps to add." });
+    let todoistProjectId: string | null = null;
+    let landedProject = "Inbox";
+    const want = input.project_name as string | undefined;
+    if (want && want.trim()) {
+      const { resolveProjectAndSections, todoistEnabled } = await import("./integrations/todoist");
+      if (todoistEnabled()) {
+        const proj = await resolveProjectAndSections(want);
+        if (proj) { todoistProjectId = proj.projectId; landedProject = proj.name; }
+      }
+    }
+    const created: string[] = [];
+    for (const s of steps) {
+      try { await createTask({ title: s, todoistProjectId, conversationId }); created.push(s); } catch { /* skip a failed step */ }
+    }
+    return j({ ok: true, created, project: landedProject, count: created.length });
   }
 
   if (name === "get_oura") {
@@ -2050,7 +2081,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 }
 
 const LEAN_TOOL_NAMES = new Set([
-  "create_task", "move_task", "schedule_reminder", "snooze_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
+  "create_task", "add_steps", "move_task", "schedule_reminder", "snooze_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
   "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
 ]);
 

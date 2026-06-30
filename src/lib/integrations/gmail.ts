@@ -60,12 +60,26 @@ function namedLabels(labelIds: string[] | undefined, map: Map<string, string>): 
 
 export type EmailSummary = {
   id: string;
+  threadId: string;
   from: string;
   subject: string;
   date: string;
   snippet: string;
   labels: string[];
 };
+
+/** Lightweight: just the thread IDs matching a query (no per-message fetch).
+ *  Used to tell whether she's already replied (her sent message shares the thread). */
+export async function listThreadIds(query: string, max = 50): Promise<string[]> {
+  const token = await getAccessToken();
+  const url = new URL(`${API}/messages`);
+  url.searchParams.set("maxResults", String(Math.min(max, 100)));
+  if (query) url.searchParams.set("q", query);
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { messages?: { id: string; threadId: string }[] };
+  return (data.messages ?? []).map((m) => m.threadId);
+}
 
 /** List the user's Gmail labels (the life-area tags). */
 export async function listLabels(): Promise<string[]> {
@@ -89,13 +103,13 @@ export async function listEmails(query = "", max = 15): Promise<EmailSummary[]> 
     const t = await res.text().catch(() => "");
     throw new Error(`Gmail list ${res.status}: ${t.slice(0, 200)}`);
   }
-  const data = (await res.json()) as { messages?: { id: string }[] };
-  const ids = (data.messages ?? []).map((m) => m.id);
+  const data = (await res.json()) as { messages?: { id: string; threadId: string }[] };
+  const refs = data.messages ?? [];
 
   const labelMap = await getUserLabelMap(token);
 
   const summaries = await Promise.all(
-    ids.map(async (id) => {
+    refs.map(async ({ id, threadId }) => {
       const mUrl = new URL(`${API}/messages/${id}`);
       mUrl.searchParams.set("format", "metadata");
       for (const h of ["From", "Subject", "Date"]) mUrl.searchParams.append("metadataHeaders", h);
@@ -107,6 +121,7 @@ export async function listEmails(query = "", max = 15): Promise<EmailSummary[]> 
       };
       return {
         id,
+        threadId,
         from: headerVal(msg.payload?.headers, "From"),
         subject: headerVal(msg.payload?.headers, "Subject") || "(no subject)",
         date: headerVal(msg.payload?.headers, "Date"),

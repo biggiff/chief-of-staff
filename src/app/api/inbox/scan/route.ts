@@ -19,7 +19,7 @@ async function run(req: NextRequest) {
   }
   if (!process.env.ANTHROPIC_API_KEY) return NextResponse.json({ ok: false, error: "No AI key." });
 
-  const { gmailConfigured, listEmails } = await import("@/lib/integrations/gmail");
+  const { gmailConfigured, listEmails, listThreadIds } = await import("@/lib/integrations/gmail");
   if (!gmailConfigured()) return NextResponse.json({ ok: false, error: "Gmail not connected." });
   if (!(await ownerReachable())) return NextResponse.json({ ok: false, error: "No messaging channel." });
 
@@ -29,8 +29,12 @@ async function run(req: NextRequest) {
   const emails = await listEmails("newer_than:2d in:inbox -category:promotions", 25).catch(() => []);
   if (!emails.length) return NextResponse.json({ ok: true, scanned: 0 });
 
+  // If she's already replied, that thread shows up in Sent — treat it as handled
+  // and don't surface it (the "acted upon" check she asked for).
+  const repliedThreads = new Set(await listThreadIds("newer_than:14d in:sent", 80).catch(() => []));
+
   const seen = new Set(((await getSetting("inbox_seen")) || "").split(",").filter(Boolean));
-  const fresh = emails.filter((e) => !seen.has(e.id));
+  const fresh = emails.filter((e) => !seen.has(e.id) && !repliedThreads.has(e.threadId));
   if (!fresh.length) return NextResponse.json({ ok: true, scanned: emails.length, fresh: 0 });
 
   // ONE cheap call extracts only the genuinely actionable items.

@@ -88,20 +88,32 @@ export async function getLocationId(zip = "85142"): Promise<string | null> {
 }
 
 /** Best-match UPC for a grocery term at her store (or null if nothing matched). */
+// Colloquial → catalog name (Fry's lists regular Coke as "Coca-Cola", so the bare
+// word "coke" only matches the Diet product). Keep this list small + obvious.
+const TERM_ALIASES: Record<string, string> = { coke: "coca-cola", cokes: "coca-cola", pop: "soda" };
+
 export async function findUpc(term: string, locationId: string): Promise<{ upc: string; name: string } | null> {
   const tok = await getClientToken();
-  const url = `${BASE}/products?filter.term=${encodeURIComponent(term)}&filter.locationId=${locationId}&filter.limit=5`;
+  const searchTerm = TERM_ALIASES[term.toLowerCase().trim()] ?? term;
+  const url = `${BASE}/products?filter.term=${encodeURIComponent(searchTerm)}&filter.locationId=${locationId}&filter.limit=5`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${tok}` }, cache: "no-store" });
   if (!res.ok) return null;
   const j = (await res.json()) as { data?: { upc: string; description?: string }[] };
   const items = j.data ?? [];
-  // Kroger's first result isn't always the right item ("bananas" → a mango).
-  // Prefer a product whose description actually contains the search words.
-  const qWords = term.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-  const best =
-    items.find((p) => qWords.length && qWords.every((w) => (p.description ?? "").toLowerCase().includes(w))) ??
-    items.find((p) => qWords.some((w) => (p.description ?? "").toLowerCase().includes(w))) ??
-    items[0];
+  if (!items.length) return null;
+  // Kroger's first result isn't always the right item ("bananas" → a mango,
+  // "coke" → Diet Coke). Score by word-match, and DEMOTE diet/zero/light-type
+  // variants she didn't ask for so the plain version wins.
+  const t = searchTerm.toLowerCase();
+  const qWords = t.split(/[\s-]+/).filter((w) => w.length > 2);
+  const UNWANTED = ["diet", "zero sugar", "zero", "sugar free", "sugar-free", "lite", "light", "decaf", "fat free", "fat-free", "low fat"];
+  const score = (p: { description?: string }) => {
+    const d = (p.description ?? "").toLowerCase();
+    let s = qWords.length && qWords.every((w) => d.includes(w)) ? 100 : qWords.some((w) => d.includes(w)) ? 40 : 0;
+    for (const u of UNWANTED) if (d.includes(u) && !t.includes(u)) s -= 30;
+    return s;
+  };
+  const best = [...items].sort((a, b) => score(b) - score(a))[0];
   return best ? { upc: best.upc, name: best.description ?? term } : null;
 }
 

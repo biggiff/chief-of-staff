@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import http from "node:http";
 import { exec } from "node:child_process";
+import { KROGER_AUTHORIZE_URL, KROGER_REDIRECT, exchangeAuthCode } from "../src/lib/integrations/kroger";
 
 config({ path: ".env.local" });
 
@@ -19,8 +20,6 @@ if (!clientId || !process.env.KROGER_CLIENT_SECRET) {
   console.error("Missing KROGER_CLIENT_ID / KROGER_CLIENT_SECRET in .env.local.");
   process.exit(1);
 }
-
-const { KROGER_AUTHORIZE_URL, KROGER_REDIRECT, exchangeAuthCode } = await import("../src/lib/integrations/kroger");
 
 const authUrl =
   `${KROGER_AUTHORIZE_URL}?` +

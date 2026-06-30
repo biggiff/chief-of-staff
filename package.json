@@ -12,7 +12,8 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed.ts",
     "sync:todoist": "tsx scripts/sync-todoist.ts",
-    "google:auth": "tsx scripts/google-auth.ts"
+    "google:auth": "tsx scripts/google-auth.ts",
+    "kroger:auth": "tsx scripts/kroger-auth.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",

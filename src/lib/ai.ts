@@ -151,7 +151,7 @@ const USER_ACTION_REQUEST =
 // Tools that actually CHANGE something. A claim of action is only credible if one ran.
 const WRITE_TOOLS = new Set([
   "create_task", "add_steps", "complete_task", "schedule_reminder", "confirm_reminder", "cancel_reminder", "snooze_reminder",
-  "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item",
+  "create_calendar_event", "move_task", "add_grocery_items", "recategorize_grocery_item", "send_to_frys",
   "log_attention", "create_idea", "add_idea_note", "capture_note", "capture_dev_note", "reassign",
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
   "promote_memory", "record_observation", "record_pushback", "save_checkin",
@@ -600,6 +600,11 @@ const TOOLS: Anthropic.Tool[] = [
       },
       required: ["items"],
     },
+  },
+  {
+    name: "send_to_frys",
+    description: "Load her current Grocery List into her Fry's (Kroger) pickup cart. Use when she says things like 'send my groceries to Fry's', 'add my list to my Fry's cart', or 'order my groceries for pickup'. Afterward she opens the Fry's app to pick a pickup time. Reports what was added and anything that couldn't be matched. If the result is needsAuth, tell her Fry's needs a one-time connect first (she'll do it on her computer).",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "recategorize_grocery_item",
@@ -1376,6 +1381,19 @@ async function runTool(
     return j({ ok: true, list: result.list, bySection, skipped: result.skipped, usedAI: result.placed.filter((p) => p.via === "ai").map((p) => p.item) });
   }
 
+  if (name === "send_to_frys") {
+    const { krogerEnabled, sendToFrysCart } = await import("./integrations/kroger");
+    if (!krogerEnabled()) return j({ ok: false, error: "Fry's isn't connected." });
+    const { resolveProjectAndSections, listActiveTasksInProject } = await import("./integrations/todoist");
+    const proj = await resolveProjectAndSections("Grocery List");
+    if (!proj) return j({ ok: false, error: "Couldn't find your Grocery List." });
+    const items = (await listActiveTasksInProject(proj.projectId)).map((t) => t.content);
+    if (!items.length) return j({ ok: true, empty: true, summary: "Your Grocery List is empty — nothing to send." });
+    const r = await sendToFrysCart(items);
+    if (r.error === "needs_auth") return j({ ok: false, needsAuth: true });
+    return j({ ok: r.ok, added: r.added, notFound: r.notFound, count: r.added.length, error: r.error });
+  }
+
   if (name === "recategorize_grocery_item") {
     return j(await recategorizeGrocery(input.item as string, input.section as string, (input.list as "grocery" | "costco") ?? "grocery"));
   }
@@ -2082,7 +2100,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 
 const LEAN_TOOL_NAMES = new Set([
   "create_task", "add_steps", "move_task", "schedule_reminder", "snooze_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
-  "add_grocery_items", "recategorize_grocery_item", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
+  "add_grocery_items", "recategorize_grocery_item", "send_to_frys", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
 ]);
 
 const LEAN_SYSTEM = `${SCOUT_VOICE}

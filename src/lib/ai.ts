@@ -2155,8 +2155,11 @@ const STATUS_LABELS: Record<string, string> = {
   log_attention: "📊 Logged that",
   reassign: "↪️ Re-tagged it",
 };
-function statusLabel(tool: string): string {
-  return STATUS_LABELS[tool] ?? `⚙️ ${tool.replace(/_/g, " ")}`;
+function statusLabel(tool: string, ok = true): string {
+  const base = STATUS_LABELS[tool] ?? `⚙️ ${tool.replace(/_/g, " ")}`;
+  if (ok) return base;
+  // Failed: don't show a success ✅. Strip the leading emoji and flag it.
+  return `⚠️ ${base.replace(/^\S+\s*/, "")} — didn't go through`;
 }
 
 function parseGroceryAdd(text: string): string[] | null {
@@ -2401,18 +2404,20 @@ export async function generateAIResponse(
       for (const block of response.content) {
         if (block.type === "tool_use") {
           toolsUsed.push(block.name);
-          if (onStatus) onStatus(statusLabel(block.name));
           const result = await runTool(block.name, block.input as Record<string, unknown>, conversationId);
           toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
-          // Remember confirmations from successful WRITE actions, so if the model
-          // later fails to compose a reply we can still confirm what actually
-          // happened instead of falsely reporting failure.
-          if (WRITE_TOOLS.has(block.name)) {
-            try {
-              const parsed = JSON.parse(result) as { ok?: boolean; summary?: string };
-              if (parsed?.ok && parsed.summary) writeConfirmations.push(parsed.summary);
-            } catch { /* non-JSON result — skip */ }
-          }
+          // Parse the outcome ONCE: the status label is success-aware (✅ only when
+          // it truly worked, ⚠️ if it errored), and successful writes feed the
+          // exhaustion-recovery confirmations.
+          let ok = true;
+          let summary: string | undefined;
+          try {
+            const parsed = JSON.parse(result) as { ok?: boolean; summary?: string };
+            ok = parsed?.ok !== false; // explicit ok:false = failed; missing ok = fine
+            summary = parsed?.summary;
+          } catch { /* non-JSON result — assume fine */ }
+          if (onStatus) onStatus(statusLabel(block.name, ok));
+          if (WRITE_TOOLS.has(block.name) && ok && summary) writeConfirmations.push(summary);
         }
       }
       messages.push({ role: "assistant", content: response.content });

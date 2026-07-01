@@ -32,16 +32,21 @@ async function run(req: NextRequest) {
   const practices = await getPractices(today, 10).catch(() => []);
   const out: Record<string, unknown> = { season };
 
-  // 1) Sign-up link — around season start (≤3 days before the first practice), create
-  //    ONE firm-but-kind commitment to send parents the season sign-up link once her
-  //    schedule is complete. The accountability loop handles "done"/"not yet"/resurface.
-  //    Held off until the season is actually starting; created once per season.
-  const scheduled = realGames.filter((g) => g.opponent && g.opponent.trim() && !/^tbd$/i.test(g.opponent));
+  // Season-timing anchors used by the nudges below.
+  const weekday = new Date(`${today}T12:00:00Z`).getUTCDay(); // 0 = Sunday
   const firstPractice = practices[0]; // earliest upcoming practice
   const daysToPractice = firstPractice
     ? (Date.parse(`${firstPractice.date.slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000
     : Infinity;
-  if (scheduled.length && daysToPractice <= 3 && (await getSetting(`sug_${season}`)) !== "created") {
+  const firstGame = realGames[0]; // earliest real (non-scrimmage) game
+  const daysToFirstGame = firstGame
+    ? (Date.parse(`${firstGame.date.slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000
+    : Infinity;
+
+  // 1) Sign-up link — on the SUNDAY BEFORE the first game (when the schedule usually
+  //    drops). Create ONE firm-but-kind commitment to send parents the season sign-up
+  //    link once her schedule is complete. Accountability loop handles done/not-yet.
+  if (firstGame && weekday === 0 && daysToFirstGame >= 1 && daysToFirstGame <= 7 && (await getSetting(`sug_${season}`)) !== "created") {
     const link = (await getSetting("volleyball_signup_link"))?.trim();
     // Verify the link actually loads before handing it over — a dead link is worse
     // than no link.
@@ -84,7 +89,6 @@ async function run(req: NextRequest) {
   // 3) Next-season kickoff — once, AFTER the first real game, a firm-but-kind
   //    commitment to start the next-season conversation with parents (early
   //    registration saves money). The accountability loop keeps it alive until done.
-  const firstGame = realGames[0]; // earliest real (non-scrimmage) game
   if (firstGame && today > firstGame.date.slice(0, 10) && (await getSetting(`nextseason_${season}`)) !== "created") {
     await createReminder({
       text: `Start talking with parents about NEXT season — early registration saves money, so the sooner you kick it off the better. Games are a good moment (they're all there).`,

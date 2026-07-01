@@ -26,7 +26,7 @@ async function run(req: NextRequest) {
   if (!season) return NextResponse.json({ ok: true, skipped: "no active season" });
 
   const today = todayStr();
-  const weekday = new Date(`${today}T12:00:00Z`).getUTCDay(); // 0 Sun … 3 Wed
+  const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
   const games = await getGames("upcoming", today, 25).catch(() => []);
   const realGames = games.filter((g) => !g.scrimmage);
   const practices = await getPractices(today, 10).catch(() => []);
@@ -43,13 +43,15 @@ async function run(req: NextRequest) {
     out.signupGenius = true;
   }
 
-  // 2) Practice plan — Wednesdays, in-season (a practice or real game is on the horizon).
-  const inSeason = practices.length > 0 || realGames.length > 0;
-  if (weekday === 3 && inSeason && (await getSetting("practiceplan_last")) !== today) {
+  // 2) Practice plan — the DAY BEFORE an actual practice (from the app), remind her
+  //    to finalize the plan + send it to her assistant coaches. Only fires when a
+  //    real practice is on the calendar tomorrow (not every week all off-season).
+  const practiceTomorrow = practices.find((p) => p.date.slice(0, 10) === tomorrow);
+  if (practiceTomorrow && (await getSetting("practiceplan_last")) !== tomorrow) {
     await notifyOwner(
-      `🏐 Practice-plan check: have Thursday's plan finalized (aim for today) and sent to your assistant coaches. Reply "done" when it's out — or "not yet" and I'll follow up.`
+      `🏐 Practice tomorrow — "${practiceTomorrow.title}". Have the plan finalized today and sent to your assistant coaches. Reply "done" when it's out, or "not yet" and I'll follow up.`
     );
-    await setSetting("practiceplan_last", today);
+    await setSetting("practiceplan_last", tomorrow);
     out.practicePlan = true;
   }
 

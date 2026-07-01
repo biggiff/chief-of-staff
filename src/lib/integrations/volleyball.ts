@@ -44,6 +44,48 @@ export async function getGames(scope: "upcoming" | "recent" | "all", today: stri
   return rows.map(mapGame);
 }
 
+// ── Game-day parent-text formatting ─────────────────────────────────────────
+/** Parse "09:10" (24h) or "9:10 am" → minutes since midnight. */
+function timeToMin(t: string | null): number | null {
+  if (!t) return null;
+  const m = t.match(/(\d{1,2}):(\d{2})\s*([ap])?/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const ap = (m[3] || "").toLowerCase();
+  if (ap) h = (h % 12) + (ap === "p" ? 12 : 0);
+  return h * 60 + parseInt(m[2], 10);
+}
+function minToClock(mins: number | null): string | null {
+  if (mins == null) return null;
+  const x = ((mins % 1440) + 1440) % 1440;
+  const H = Math.floor(x / 60), M = x % 60;
+  const h12 = H % 12 === 0 ? 12 : H % 12;
+  return `${h12}:${String(M).padStart(2, "0")} ${H >= 12 ? "PM" : "AM"}`;
+}
+
+/** The copy-paste parent text for a game, in her format (opponent + emojis).
+ *  Scorekeeper line only for HOME games (matches the app hiding it when away). */
+export function formatGameDayText(g: Game): string {
+  const startMin = timeToMin(g.time);
+  const start = minToClock(startMin);
+  const arrive = startMin != null ? minToClock(startMin - 15) : null;
+  const lines = [
+    "🏐 Happy (almost) game day! 🏐",
+    "",
+    `🆚 ${g.opponent || "TBD"}${g.home ? " (home)" : " (away)"}`,
+    `📍 ${g.location || (g.home ? "Home" : "TBD")}`,
+    start ? `🕘 Starts ${start} · arrive by ${arrive}` : "🕘 Starts [add game time]",
+    g.lineJudge ? `🚩 Line judge: ${g.lineJudge}` : "🚩 Line judge: still need a volunteer 🙏🏻",
+  ];
+  if (g.home) lines.push(g.scorekeeper ? `📋 Scorekeeper: ${g.scorekeeper}` : "📋 Scorekeeper: still need a volunteer 🙏🏻");
+  lines.push(
+    g.snackProvider ? `🍿 Snacks: ${g.snackProvider}` : "🍿 Snacks: still need someone 🙏🏻",
+    "",
+    "Let me know if you can't make it tomorrow. See you soon! 💜"
+  );
+  return lines.join("\n");
+}
+
 export async function getPractices(today: string, limit = 15): Promise<{ date: string; title: string; minutes: number | null; notes: string | null }[]> {
   const rows = (await sql()`select * from practices where date >= ${today} order by date asc limit ${limit}`) as Record<string, unknown>[];
   return rows.map((p) => ({ date: String(p.date ?? ""), title: (p.title as string) ?? "Practice", minutes: (p.total_minutes as number) ?? null, notes: (p.notes as string) ?? null }));

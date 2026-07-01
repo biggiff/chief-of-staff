@@ -69,6 +69,20 @@ async function run(req: NextRequest) {
     out.practicePlan = true;
   }
 
+  // 3) Next-season kickoff — once, AFTER the first real game, a firm-but-kind
+  //    commitment to start the next-season conversation with parents (early
+  //    registration saves money). The accountability loop keeps it alive until done.
+  const firstGame = realGames[0]; // earliest real (non-scrimmage) game
+  if (firstGame && today > firstGame.date.slice(0, 10) && (await getSetting(`nextseason_${season}`)) !== "created") {
+    await createReminder({
+      text: `Start talking with parents about NEXT season — early registration saves money, so the sooner you kick it off the better. Games are a good moment (they're all there).`,
+      remindAt: new Date(),
+      followUpAfterMinutes: 1440,
+    });
+    await setSetting(`nextseason_${season}`, "created");
+    out.nextSeason = true;
+  }
+
   return NextResponse.json({ ok: true, ...out });
 }
 

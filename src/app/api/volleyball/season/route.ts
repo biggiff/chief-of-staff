@@ -57,6 +57,18 @@ async function run(req: NextRequest) {
     out.signupCommitment = true;
   }
 
+  // 1b) Parent info sheet — BEFORE the first practice, nudge to update + send it.
+  //     Easy to skip when parents are mostly returning. Once per season.
+  if (firstPractice && daysToPractice <= 3 && (await getSetting(`infosheet_${season}`)) !== "created") {
+    await createReminder({
+      text: `Update + send your parent info sheet before the first practice — for snacks, line judge & scorekeeper. Reply "done" when it's out, or "drop it" to skip this season (fine if your parents are mostly returning).`,
+      remindAt: new Date(),
+      followUpAfterMinutes: 1440,
+    });
+    await setSetting(`infosheet_${season}`, "created");
+    out.infoSheet = true;
+  }
+
   // 2) Practice plan — the DAY BEFORE an actual practice (from the app), remind her
   //    to finalize the plan + send it to her assistant coaches. Only fires when a
   //    real practice is on the calendar tomorrow (not every week all off-season).

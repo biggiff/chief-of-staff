@@ -25,17 +25,25 @@ function minus15(t: string | null): string | null {
 function composeParentText(g: Game): string {
   const where = g.location || (g.home ? "Home" : g.opponent || "TBD");
   const arrive = minus15(g.time);
-  return [
+  const lines = [
     "🏐 Happy (almost) game day!",
     "",
     `— ${where}`,
     `— Game starts at ${g.time || "[add game time]"}`,
     `— Arrive by ${arrive || "[15 min before start]"}`,
     g.lineJudge ? `— ${g.lineJudge} is our line judge` : "— We still need a volunteer to be our line judge 🙏🏻",
+  ];
+  // Scorekeeper is only needed when WE'RE the home team (matches the app's own
+  // logic, which hides that section for away games).
+  if (g.home) {
+    lines.push(g.scorekeeper ? `— ${g.scorekeeper} is keeping score` : "— We still need a volunteer to keep score 🙏🏻");
+  }
+  lines.push(
     g.snackProvider ? `— ${g.snackProvider} is bringing snacks` : "— We still need someone to bring snacks 🙏🏻",
     "",
-    "Let me know if you can't make it tomorrow. See you soon!",
-  ].join("\n");
+    "Let me know if you can't make it tomorrow. See you soon!"
+  );
+  return lines.join("\n");
 }
 
 /**

@@ -140,7 +140,7 @@ function forcedReadTool(text: string): string | null {
 
 // Past-tense "I did it" claims. NOT offers/questions (handled below).
 const ACTION_CLAIM =
-  /\b(done|added|created|scheduled|completed|logged|moved|deleted|removed|cancell?ed|set up|checked off|knocked (?:it |that )?out|marked (?:it |that )?(?:done|complete|completed)|put (?:it|that|them) (?:on|in)|added (?:it|that|them)|i'?ve (?:added|created|scheduled|set|logged|moved|completed|put|sent|drafted))\b/i;
+  /\b(done|added|created|scheduled|completed|logged|moved|deleted|removed|cancell?ed|set up|checked off|knocked (?:it |that )?out|marked (?:it |that )?(?:done|complete|completed)|put (?:it|that|them) (?:on|in)|added (?:it|that|them)|watching for|i'?m watching|now watching|keeping an eye|on the lookout for|i'?ve (?:added|created|scheduled|set|logged|moved|completed|put|sent|drafted|got a watch))\b/i;
 // If the reply is offering/asking (not claiming), don't flag it.
 const OFFER_OR_QUESTION = /\b(want me to|should i|shall i|i can|i could|would you like|do you want|let me know if|i'?ll |i will )\b/i;
 // The guard ONLY makes sense when she actually asked Scout to DO something this

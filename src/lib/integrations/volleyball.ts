@@ -72,7 +72,7 @@ export function formatGameDayText(g: Game): string {
   const lines = [
     "🏐 Happy (almost) game day! 🏐",
     "",
-    `🆚 ${g.opponent || "TBD"}${g.home ? " (home)" : " (away)"}`,
+    `🆚 ${g.opponent || "TBD"}`,
     `📍 ${g.location || (g.home ? "Home" : "TBD")}`,
     start ? `🕘 Starts ${start} · arrive by ${arrive}` : "🕘 Starts [add game time]",
     g.lineJudge ? `🚩 Line judge: ${g.lineJudge}` : "🚩 Line judge: still need a volunteer 🙏🏻",

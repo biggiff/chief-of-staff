@@ -9,8 +9,8 @@ export const maxDuration = 30;
 
 /**
  * Daily (cron) volleyball season helper — two season-aware nudges:
- *  1) SignUpGenius: once per season, when real games (opponent set) are in the
- *     app, remind her to create/update the SignUpGenius.
+ *  1) Sign-up link: once per season, when real games (opponent set) are in the
+ *     app, remind her to send parents her app's sign-up form link.
  *  2) Practice plan: on Wednesdays in-season, remind her to finalize Thursday's
  *     plan and send it to her assistant coaches.
  * CRON_SECRET-authed. Silent off-season / when already handled.
@@ -32,15 +32,16 @@ async function run(req: NextRequest) {
   const practices = await getPractices(today, 10).catch(() => []);
   const out: Record<string, unknown> = { season };
 
-  // 1) SignUpGenius — once per season, once the schedule (real games w/ opponents) is in.
+  // 1) Sign-up link — once per season, once the schedule (real games w/ opponents)
+  //    is in the app, nudge her to SEND the app's sign-up form link to parents.
   const scheduled = realGames.filter((g) => g.opponent && g.opponent.trim() && !/^tbd$/i.test(g.opponent));
   if (scheduled.length && (await getSetting(`sug_${season}`)) !== "done") {
     const first = scheduled[0];
     await notifyOwner(
-      `🏐 Your ${season} game schedule is up — ${scheduled.length} game${scheduled.length === 1 ? "" : "s"} (first: ${first.date} vs ${first.opponent}). Time to create/update your SignUpGenius so parents can claim snacks, line judge, and scorekeeper. Want me to set a reminder to follow up if it's not done?`
+      `🏐 Your ${season} game schedule is up — ${scheduled.length} game${scheduled.length === 1 ? "" : "s"} (first: ${first.date} vs ${first.opponent}). Time to send parents your sign-up link so they can claim snacks, line judge, and scorekeeper. Reply "done" once it's sent, or "not yet" and I'll follow up.`
     );
     await setSetting(`sug_${season}`, "done");
-    out.signupGenius = true;
+    out.signupLink = true;
   }
 
   // 2) Practice plan — the DAY BEFORE an actual practice (from the app), remind her

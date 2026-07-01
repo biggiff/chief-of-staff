@@ -116,8 +116,15 @@ export async function POST(req: NextRequest) {
       // grocery adds — both bypass the model so a food word can't be mis-routed.
       const fast = !image && aiEnabled() ? (await fastDevNote(userText, conversationId)) ?? (await fastGrocery(userText)) : null;
       if (fast) {
-        await db.insert(messages).values({ conversationId, role: "chief_of_staff", content: fast.content, metadataJson: fast.metadata });
-        await sendTelegram(chatId, fast.content);
+        // These deterministic shortcuts skip the model, so they'd otherwise miss the
+        // status label. Prepend it so the "a label = Scout really did it" rule holds
+        // everywhere — no silent actions.
+        const label = fast.metadata?.engine === "fast-devnote" ? "🛠️ Saved a dev note"
+          : fast.metadata?.engine === "fast-grocery" ? "🛒 Updated your grocery list"
+          : null;
+        const content = label ? `${label}\n—\n${fast.content}` : fast.content;
+        await db.insert(messages).values({ conversationId, role: "chief_of_staff", content, metadataJson: fast.metadata });
+        await sendTelegram(chatId, content);
       } else if (aiEnabled()) {
         // STREAM with a stay-visible "working" trail: status lines (one per tool,
         // generated in code — no extra tokens) accumulate above the final answer,

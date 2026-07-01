@@ -91,6 +91,11 @@ export async function getPractices(today: string, limit = 15): Promise<{ date: s
   return rows.map((p) => ({ date: String(p.date ?? ""), title: (p.title as string) ?? "Practice", minutes: (p.total_minutes as number) ?? null, notes: (p.notes as string) ?? null }));
 }
 
+export async function getActiveSeasonName(): Promise<string | null> {
+  const rows = (await sql()`select name from seasons where is_active = true limit 1`) as Record<string, unknown>[];
+  return (rows[0]?.name as string) ?? null;
+}
+
 export async function getRoster(): Promise<{ season: string | null; players: { name: string; grade: number | null; number: number | null }[] }> {
   const db = sql();
   const seasons = (await db`select * from seasons where is_active = true limit 1`) as Record<string, unknown>[];

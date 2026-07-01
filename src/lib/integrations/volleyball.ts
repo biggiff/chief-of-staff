@@ -19,13 +19,16 @@ function sql() {
 }
 
 export type Game = {
-  date: string; opponent: string | null; home: boolean; scrimmage: boolean;
+  date: string; time: string | null; opponent: string | null; location: string | null; home: boolean; scrimmage: boolean;
   scorekeeper: string | null; lineJudge: string | null; snackProvider: string | null;
   setsWon: number | null; setsLost: number | null; notes: string | null;
 };
 
 const mapGame = (g: Record<string, unknown>): Game => ({
-  date: String(g.date ?? ""), opponent: (g.opponent as string) ?? null, home: !!g.is_home, scrimmage: !!g.is_scrimmage,
+  date: String(g.date ?? ""),
+  // forward-compatible: use a time/game_time column if she adds one, else null
+  time: (g.time as string) ?? (g.game_time as string) ?? (g.start_time as string) ?? null,
+  opponent: (g.opponent as string) ?? null, location: (g.location as string) ?? null, home: !!g.is_home, scrimmage: !!g.is_scrimmage,
   scorekeeper: (g.scorekeeper as string) ?? null, lineJudge: (g.line_judge as string) ?? null, snackProvider: (g.snack_provider as string) ?? null,
   setsWon: (g.sets_won as number) ?? null, setsLost: (g.sets_lost as number) ?? null, notes: (g.general_notes as string) ?? null,
 });

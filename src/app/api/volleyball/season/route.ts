@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { todayStr } from "@/lib/dates";
-import { getSetting, setSetting } from "@/lib/operator";
+import { getSetting, setSetting, createReminder } from "@/lib/operator";
 import { notifyOwner } from "@/lib/integrations/notify";
 import { getGames, getPractices, getActiveSeasonName, volleyballEnabled } from "@/lib/integrations/volleyball";
 
@@ -32,16 +32,21 @@ async function run(req: NextRequest) {
   const practices = await getPractices(today, 10).catch(() => []);
   const out: Record<string, unknown> = { season };
 
-  // 1) Sign-up link — once per season, once the schedule (real games w/ opponents)
-  //    is in the app, nudge her to SEND the app's sign-up form link to parents.
+  // 1) Sign-up link — around season start (≤3 days before the first practice), create
+  //    ONE firm-but-kind commitment to send parents the season sign-up link once her
+  //    schedule is complete. The accountability loop handles "done"/"not yet"/resurface.
+  //    Held off until the season is actually starting; created once per season.
   const scheduled = realGames.filter((g) => g.opponent && g.opponent.trim() && !/^tbd$/i.test(g.opponent));
-  if (scheduled.length && (await getSetting(`sug_${season}`)) !== "done") {
-    const first = scheduled[0];
-    await notifyOwner(
-      `🏐 Your ${season} game schedule is up — ${scheduled.length} game${scheduled.length === 1 ? "" : "s"} (first: ${first.date} vs ${first.opponent}). Time to send parents your sign-up link so they can claim snacks, line judge, and scorekeeper. Reply "done" once it's sent, or "not yet" and I'll follow up.`
-    );
-    await setSetting(`sug_${season}`, "done");
-    out.signupLink = true;
+  const firstPractice = practices[0]; // earliest upcoming practice
+  const daysToPractice = firstPractice
+    ? (Date.parse(`${firstPractice.date.slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000
+    : Infinity;
+  if (scheduled.length && daysToPractice <= 3 && (await getSetting(`sug_${season}`)) !== "created") {
+    const link = (await getSetting("volleyball_signup_link"))?.trim();
+    const text = `Send parents the ${season} sign-up link${link ? ` (${link})` : ""} once your schedule is complete — for snacks, line judge & scorekeeper.`;
+    await createReminder({ text, remindAt: new Date(), followUpAfterMinutes: 1440 });
+    await setSetting(`sug_${season}`, "created");
+    out.signupCommitment = true;
   }
 
   // 2) Practice plan — the DAY BEFORE an actual practice (from the app), remind her

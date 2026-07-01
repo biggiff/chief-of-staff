@@ -157,7 +157,7 @@ const WRITE_TOOLS = new Set([
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
   "promote_memory", "record_observation", "record_pushback", "save_checkin",
   "add_working_agreement", "start_workflow", "update_workflow_state",
-  "create_email_draft", "send_email", "watch_for_email", "cancel_email_watch", "set_step_goal", "set_workout_goal", "set_proof_mode", "sync_todoist", "undo_last",
+  "create_email_draft", "send_email", "watch_for_email", "cancel_email_watch", "set_step_goal", "set_workout_goal", "set_volleyball_signup_link", "set_proof_mode", "sync_todoist", "undo_last",
 ]);
 
 /** True if the reply asserts a FRESH action was taken but no write tool actually
@@ -217,7 +217,7 @@ EMAIL WATCH (expecting a specific email): when she says she's waiting on / expec
 
 INBOX SUGGESTIONS (accept-to-create): twice a day Scout sends a "📥 From your inbox — suggested to-dos:" digest with NUMBERED suggested tasks (some marked 📅 = calendar events). When she replies to accept them — "add all", "add 1 and 3", "yes", "do the PTO one", "add those" — CREATE each accepted suggestion: create_task for to-dos, create_calendar_event for the 📅 ones (ask for the date/time if it isn't in the suggestion). The numbered list is in the recent history — map her selection to it. If she says "add all", create every one. Confirm briefly what you added ("Added 3 to your list."). If she edits one ("add 2 but change it to..."), honor the edit. This is her lightweight way to turn email into tasks — make it one-tap easy, never make her re-type the task.
 
-STANDING AUTOMATIONS — you run these on your own as scheduled background jobs. You do NOT "remember" to do them and they are NOT stored as reminders/memories — they just run. When she asks whether something is set up, "do we have a rule for X", or "will you remember to…", CHECK THIS LIST FIRST and answer from it. If it's here, confirm it's already an automatic standing job — do NOT offer to set up a new manual reminder for it (that would duplicate). The jobs: (1) Morning brief — daily ~7am (calendar + due tasks + open commitments). (2) Reminders + accountability check-backs — continuous (fires her reminders, escalating firm-but-kind follow-ups). (3) Proactive inbox scan — 2×/day (surfaces new actionable email as suggested to-dos; skips ones she's replied to). (4) Email watch — every 15 min (alerts her when a specific email she asked you to watch for arrives). (5) Workout consistency — daily (nudges if no Hevy workout logged for a while). (6) VOLLEYBALL game-day parent text — the day before each real game, ~Friday (auto-drafts the parent text from her app). (7) VOLLEYBALL practice-plan nudge — the day before each practice on her app (reminds her to finalize that practice's plan + send to assistant coaches). (8) VOLLEYBALL sign-up link nudge — daily (once real games with opponents are in her app, reminds her once to send parents her app's sign-up form link so they can claim snacks/line judge/scorekeeper). Example: "do we have a rule for the practice-plan check?" → "Yes — I automatically check every Wednesday during the season and nudge you to finalize Thursday's plan. It's already running, nothing to set up."
+STANDING AUTOMATIONS — you run these on your own as scheduled background jobs. You do NOT "remember" to do them and they are NOT stored as reminders/memories — they just run. When she asks whether something is set up, "do we have a rule for X", or "will you remember to…", CHECK THIS LIST FIRST and answer from it. If it's here, confirm it's already an automatic standing job — do NOT offer to set up a new manual reminder for it (that would duplicate). The jobs: (1) Morning brief — daily ~7am (calendar + due tasks + open commitments). (2) Reminders + accountability check-backs — continuous (fires her reminders, escalating firm-but-kind follow-ups). (3) Proactive inbox scan — 2×/day (surfaces new actionable email as suggested to-dos; skips ones she's replied to). (4) Email watch — every 15 min (alerts her when a specific email she asked you to watch for arrives). (5) Workout consistency — daily (nudges if no Hevy workout logged for a while). (6) VOLLEYBALL game-day parent text — the day before each real game, ~Friday (auto-drafts the parent text from her app). (7) VOLLEYBALL practice-plan nudge — the day before each practice on her app (reminds her to finalize that practice's plan + send to assistant coaches). (8) VOLLEYBALL sign-up link nudge — around season start (≤3 days before her first app practice), creates ONE firm-but-kind commitment to send parents the season sign-up link (stored via set_volleyball_signup_link) once her schedule is complete; the accountability loop handles done/not-yet. If she gives you the link ("my sign-up link is…"), call set_volleyball_signup_link. Example: "do we have a rule for the practice-plan check?" → "Yes — I automatically check every Wednesday during the season and nudge you to finalize Thursday's plan. It's already running, nothing to set up."
 
 VOLLEYBALL (she coaches the Thunder Kittens): her coaching app is connected READ-ONLY — get_games (schedule: dates, opponents, home/away, and the assigned scorekeeper / line judge / snack provider, plus past results), get_practices, get_roster. Use these for anything about her team ("when's our next game", "who's on snacks Saturday", "what's our schedule", "how'd we do last game", "who's on the roster"). This is the real source of truth for her season — pull from it rather than guessing, and it's what powers her game-day reminders. Each game has a scrimmage flag (true/false): treat SCRIMMAGES and real GAMES as distinct. "Next game" / "our games" means real games (scrimmage=false) unless she says otherwise; call out when something is a scrimmage. You can READ it but cannot change it (no writes to her live app).
 
@@ -917,6 +917,11 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { per_week: { type: "number" } }, required: ["per_week"] },
   },
   {
+    name: "set_volleyball_signup_link",
+    description: "Store her season sign-up form link (one per season, from her volleyball app). Use when she says 'my volleyball sign-up link is …' / 'here's the parent sign-up link'. It gets included in the season sign-up nudge so it's copy-paste ready to send to parents.",
+    input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+  },
+  {
     name: "get_oura",
     description: "Read her Oura ring data — sleep, readiness, and activity scores (and sleep hours, steps), latest + recent trend. Use for 'how did I sleep', 'what's my readiness', 'how am I recovering', or to ground anything about her body/energy/Health in real data instead of guessing. Default ~7 days.",
     input_schema: { type: "object", properties: { days: { type: "number" } } },
@@ -1260,6 +1265,13 @@ async function runTool(
     const perWeek = Math.max(1, Math.min(7, Math.round(input.per_week as number)));
     await setSetting("workout_goal", String(perWeek));
     return j({ ok: true, summary: `Got it — aiming for ${perWeek} workout${perWeek === 1 ? "" : "s"} a week. I'll nudge you if you go quiet, and ease off on rest days.` });
+  }
+
+  if (name === "set_volleyball_signup_link") {
+    const url = String(input.url ?? "").trim();
+    if (!/^https?:\/\//i.test(url)) return j({ ok: false, error: "That doesn't look like a full URL (should start with http)." });
+    await setSetting("volleyball_signup_link", url);
+    return j({ ok: true, summary: `Saved your season sign-up link — I'll include it when I nudge you to send it to parents.` });
   }
 
   if (name === "add_steps") {

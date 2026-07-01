@@ -217,6 +217,8 @@ EMAIL WATCH (expecting a specific email): when she says she's waiting on / expec
 
 INBOX SUGGESTIONS (accept-to-create): twice a day Scout sends a "📥 From your inbox — suggested to-dos:" digest with NUMBERED suggested tasks (some marked 📅 = calendar events). When she replies to accept them — "add all", "add 1 and 3", "yes", "do the PTO one", "add those" — CREATE each accepted suggestion: create_task for to-dos, create_calendar_event for the 📅 ones (ask for the date/time if it isn't in the suggestion). The numbered list is in the recent history — map her selection to it. If she says "add all", create every one. Confirm briefly what you added ("Added 3 to your list."). If she edits one ("add 2 but change it to..."), honor the edit. This is her lightweight way to turn email into tasks — make it one-tap easy, never make her re-type the task.
 
+VOLLEYBALL (she coaches the Thunder Kittens): her coaching app is connected READ-ONLY — get_games (schedule: dates, opponents, home/away, and the assigned scorekeeper / line judge / snack provider, plus past results), get_practices, get_roster. Use these for anything about her team ("when's our next game", "who's on snacks Saturday", "what's our schedule", "how'd we do last game", "who's on the roster"). This is the real source of truth for her season — pull from it rather than guessing, and it's what powers her game-day reminders. You can READ it but cannot change it (no writes to her live app).
+
 WORKOUT CONSISTENCY: Scout sends a daily-ish nudge if she hasn't logged a workout in Hevy for a while (she set a per-week goal via set_workout_goal). When she replies to a workout nudge: "done / did it / worked out" → just acknowledge warmly and briefly (the actual log lives in Hevy, nothing to record here) — you can call get_workouts to confirm/celebrate the streak if natural. "rest / rest day / taking it easy" → affirm it (rest is part of training, no guilt); the nudge already eases off for a couple days. If she asks how consistent she's been, use get_workouts. Don't lecture or use motivational-poster language — grounded and short ("Nice, that's 3 this week.").
 
 TASK BREAKDOWN (anti-overwhelm — she freezes when something feels too big): when she says a thing feels too big / "where do I start" / "help me break down X" / "I'm overwhelmed by Y", or replies "too big" to a check-back — do NOT just sympathize or restate it. Break it into 3–7 CONCRETE do-now steps, each small enough to start in a couple minutes and phrased as a verb + specific object ("text Tanya the COI", not "deal with the rental"). LEAD with the single smallest first step so she can start this second. Then offer to save the steps as tasks (add_steps) — and if it's something she's been avoiding, offer a check-back on just that first step. The goal is to make STARTING feel tiny, not to produce a thorough plan.
@@ -888,6 +890,21 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: { count: { type: "number" } } },
   },
   {
+    name: "get_games",
+    description: "Read her Thunder Kittens volleyball GAME schedule from her coaching app (read-only). Each game has date, opponent, home/away, who's assigned scorekeeper / line judge / snack provider, and (for past games) the set score. Use for 'when's our next game', 'who's on snacks Saturday', 'what's our schedule', 'how'd we do last game'. scope: 'upcoming' (default), 'recent' (past results), or 'all'.",
+    input_schema: { type: "object", properties: { scope: { type: "string", enum: ["upcoming", "recent", "all"] } } },
+  },
+  {
+    name: "get_practices",
+    description: "Read her upcoming volleyball PRACTICES (date, title, length, notes) from her coaching app.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_roster",
+    description: "Read her volleyball TEAM ROSTER (players, grades, jersey numbers) for the active season from her coaching app.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "set_step_goal",
     description: "Change her daily step goal (used by the throughout-the-day step pace nudges). e.g. 'set my step goal to 10000'.",
     input_schema: { type: "object", properties: { goal: { type: "number" } }, required: ["goal"] },
@@ -1297,6 +1314,26 @@ async function runTool(
       getRoutines().catch(() => []),
     ]);
     return j({ ok: true, workouts, routines, note: workouts.length === 0 ? "No workouts logged in Hevy yet." : undefined });
+  }
+
+  if (name === "get_games") {
+    const { getGames, volleyballEnabled } = await import("./integrations/volleyball");
+    if (!volleyballEnabled()) return j({ ok: false, error: "Volleyball app isn't connected." });
+    const scope = ((input.scope as string) ?? "upcoming") as "upcoming" | "recent" | "all";
+    const games = await getGames(scope, todayStr()).catch((e) => { throw e; });
+    return j({ ok: true, scope, count: games.length, games });
+  }
+
+  if (name === "get_practices") {
+    const { getPractices, volleyballEnabled } = await import("./integrations/volleyball");
+    if (!volleyballEnabled()) return j({ ok: false, error: "Volleyball app isn't connected." });
+    return j({ ok: true, practices: await getPractices(todayStr()) });
+  }
+
+  if (name === "get_roster") {
+    const { getRoster, volleyballEnabled } = await import("./integrations/volleyball");
+    if (!volleyballEnabled()) return j({ ok: false, error: "Volleyball app isn't connected." });
+    return j({ ok: true, ...(await getRoster()) });
   }
 
   if (name === "get_attention_history") {
@@ -2136,6 +2173,9 @@ const STATUS_LABELS: Record<string, string> = {
   cancel_email_watch: "🚫 Stopped watching for it",
   get_oura: "💪 Read your Oura data",
   get_workouts: "🏋️ Checked your workouts",
+  get_games: "🏐 Checked your game schedule",
+  get_practices: "🏐 Checked your practices",
+  get_roster: "🏐 Checked your roster",
   set_workout_goal: "🏋️ Set your workout goal",
   set_step_goal: "👟 Set your step goal",
   add_steps: "🪜 Added those steps",
@@ -2196,7 +2236,7 @@ function classifyFast(text: string): "grocery" | "lean" | "full" {
 
 const LEAN_TOOL_NAMES = new Set([
   "create_task", "add_steps", "move_task", "schedule_reminder", "snooze_reminder", "complete_task", "create_idea", "add_idea_note", "log_attention", "capture_dev_note",
-  "add_grocery_items", "recategorize_grocery_item", "clear_grocery_items", "send_to_frys", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "reassign",
+  "add_grocery_items", "recategorize_grocery_item", "clear_grocery_items", "send_to_frys", "get_calendar_today", "get_calendar", "create_calendar_event", "get_todoist_tasks", "get_games", "get_practices", "get_roster", "reassign",
 ]);
 
 const LEAN_SYSTEM = `${SCOUT_VOICE}

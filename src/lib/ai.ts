@@ -918,8 +918,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "set_volleyball_signup_link",
-    description: "Store her season sign-up form link (one per season, from her volleyball app). Use when she says 'my volleyball sign-up link is …' / 'here's the parent sign-up link'. It gets included in the season sign-up nudge so it's copy-paste ready to send to parents.",
+    description: "Store her season sign-up form link (one per season, from her volleyball app). Use when she says 'my volleyball sign-up link is …' / 'here's the parent sign-up link'. Verifies it loads on save and gets included in the season sign-up nudge so it's copy-paste ready to send to parents.",
     input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+  },
+  {
+    name: "check_volleyball_link",
+    description: "Verify her stored season sign-up link actually loads/works right now. Use when she asks 'does my sign-up link work', 'is my link still good', 'test the sign-up link'. Returns working:true/false.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "get_oura",
@@ -1271,7 +1276,22 @@ async function runTool(
     const url = String(input.url ?? "").trim();
     if (!/^https?:\/\//i.test(url)) return j({ ok: false, error: "That doesn't look like a full URL (should start with http)." });
     await setSetting("volleyball_signup_link", url);
-    return j({ ok: true, summary: `Saved your season sign-up link — I'll include it when I nudge you to send it to parents.` });
+    const { checkSignupLink } = await import("./integrations/volleyball");
+    const chk = await checkSignupLink(url);
+    return j({
+      ok: true,
+      summary: chk.ok
+        ? `Saved your season sign-up link — and I confirmed it loads. ✓ I'll include it when I nudge you to send it.`
+        : `Saved your season sign-up link — but heads up: it didn't load when I checked${chk.status ? ` (returned ${chk.status})` : ""}. Double-check it's right before you send it to parents.`,
+    });
+  }
+
+  if (name === "check_volleyball_link") {
+    const url = (await getSetting("volleyball_signup_link"))?.trim();
+    if (!url) return j({ ok: false, error: "No sign-up link stored yet — tell me the link first." });
+    const { checkSignupLink } = await import("./integrations/volleyball");
+    const chk = await checkSignupLink(url);
+    return j({ ok: true, url, working: chk.ok, status: chk.status });
   }
 
   if (name === "add_steps") {

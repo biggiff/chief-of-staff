@@ -86,6 +86,20 @@ export function formatGameDayText(g: Game): string {
   return lines.join("\n");
 }
 
+/** Verify a URL actually loads (for the season sign-up link, before sending it to
+ *  parents). Follows redirects; times out at 8s; any error/non-2xx = not working. */
+export async function checkSignupLink(url: string): Promise<{ ok: boolean; status: number | null }> {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(url, { method: "GET", redirect: "follow", signal: ctrl.signal, cache: "no-store" });
+    clearTimeout(t);
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: null };
+  }
+}
+
 export async function getPractices(today: string, limit = 15): Promise<{ date: string; title: string; minutes: number | null; notes: string | null }[]> {
   const rows = (await sql()`select * from practices where date >= ${today} order by date asc limit ${limit}`) as Record<string, unknown>[];
   return rows.map((p) => ({ date: String(p.date ?? ""), title: (p.title as string) ?? "Practice", minutes: (p.total_minutes as number) ?? null, notes: (p.notes as string) ?? null }));

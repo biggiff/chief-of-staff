@@ -43,7 +43,15 @@ async function run(req: NextRequest) {
     : Infinity;
   if (scheduled.length && daysToPractice <= 3 && (await getSetting(`sug_${season}`)) !== "created") {
     const link = (await getSetting("volleyball_signup_link"))?.trim();
-    const text = `Send parents the ${season} sign-up link${link ? ` (${link})` : ""} once your schedule is complete — for snacks, line judge & scorekeeper.`;
+    // Verify the link actually loads before handing it over — a dead link is worse
+    // than no link.
+    let linkPart = "";
+    if (link) {
+      const { checkSignupLink } = await import("@/lib/integrations/volleyball");
+      const chk = await checkSignupLink(link);
+      linkPart = chk.ok ? ` (${link})` : ` — ⚠️ your saved link isn't loading right now, double-check it: ${link}`;
+    }
+    const text = `Send parents the ${season} sign-up link${linkPart} once your schedule is complete — for snacks, line judge & scorekeeper.`;
     await createReminder({ text, remindAt: new Date(), followUpAfterMinutes: 1440 });
     await setSetting(`sug_${season}`, "created");
     out.signupCommitment = true;

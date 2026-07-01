@@ -8,7 +8,7 @@ import { generateChiefResponse } from "@/lib/chat-engine";
 import { telegramEnabled, isAllowedChat, webhookSecretOk, sendTelegram, sendTelegramMessage, editTelegramMessage, getTelegramFile } from "@/lib/integrations/telegram";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const TG_TITLE = "💬 Telegram";
 

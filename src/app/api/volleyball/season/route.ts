@@ -74,6 +74,26 @@ async function run(req: NextRequest) {
     out.infoSheet = true;
   }
 
+  // 1c) Kitten of the Week certificates — she starts handing them out at the LAST
+  //     practice before the first game, so they must be DONE before then. Fire ~5
+  //     days ahead as a firm-but-kind commitment. Once per season.
+  const preGamePractice = firstGame
+    ? practices.filter((p) => p.date.slice(0, 10) < firstGame.date.slice(0, 10)).slice(-1)[0]
+    : undefined;
+  const daysToPreGame = preGamePractice
+    ? (Date.parse(`${preGamePractice.date.slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000
+    : Infinity;
+  if (preGamePractice && daysToPreGame >= 0 && daysToPreGame <= 5 && (await getSetting(`certs_${season}`)) !== "created") {
+    const practiceLabel = new Date(`${preGamePractice.date.slice(0, 10)}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    await createReminder({
+      text: `Make this year's Kitten of the Week certificates — you start handing them out at the ${practiceLabel} practice (the one before your first game), so have them ready before then.`,
+      remindAt: new Date(),
+      followUpAfterMinutes: 1440,
+    });
+    await setSetting(`certs_${season}`, "created");
+    out.certificates = true;
+  }
+
   // 2) Practice plan — the DAY BEFORE an actual practice (from the app), remind her
   //    to finalize the plan + send it to her assistant coaches. Only fires when a
   //    real practice is on the calendar tomorrow (not every week all off-season).

@@ -24,6 +24,7 @@ export async function middleware(req: NextRequest) {
     pathname === "/api/steps/check" ||    // cron — auth'd by CRON_SECRET
     pathname === "/api/inbox/scan" ||     // cron — auth'd by CRON_SECRET
     pathname === "/api/workouts/check" || // cron — auth'd by CRON_SECRET
+    pathname === "/api/email/watch" ||    // cron — auth'd by CRON_SECRET
     pathname === "/api/telegram"         // Telegram webhook — auth'd by secret token + chat allowlist
   ) {
     return NextResponse.next();

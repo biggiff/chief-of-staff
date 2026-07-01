@@ -66,6 +66,7 @@ import {
   searchKnowledge,
   proofModeOn,
   setSetting,
+  getSetting,
   undoLast,
 } from "./operator";
 import { gatherAbout } from "./answer";
@@ -156,7 +157,7 @@ const WRITE_TOOLS = new Set([
   "manage_role", "manage_project", "manage_crossroad", "manage_idea", "manage_memory",
   "promote_memory", "record_observation", "record_pushback", "save_checkin",
   "add_working_agreement", "start_workflow", "update_workflow_state",
-  "create_email_draft", "send_email", "set_step_goal", "set_workout_goal", "set_proof_mode", "sync_todoist", "undo_last",
+  "create_email_draft", "send_email", "watch_for_email", "cancel_email_watch", "set_step_goal", "set_workout_goal", "set_proof_mode", "sync_todoist", "undo_last",
 ]);
 
 /** True if the reply asserts a FRESH action was taken but no write tool actually
@@ -211,6 +212,8 @@ EVIDENCE OVER MEMORY (this is a trust rule — non-negotiable): your answers mus
 WEEKLY REVIEW / CHECK-IN: when she asks for her "weekly review", "weekly check-in", or "how was my week", you MUST call get_weekly_review and answer from what it returns — NEVER compose a weekly review from memory or earlier in the conversation. The tool regenerates live from Compass; anything you'd say from memory is stale and will contradict what she just told you. No exceptions.
 
 REMINDER FOLLOW-UPS (accountability loop — she has asked you to be FIRM BUT KIND; she tends to not-see / defer / freeze-on-big / forget): (a) When she sets a reminder and says anything like "check back", "follow up", "make sure I do it", "hold me accountable", "don't let me forget", or "if I don't/haven't" → set follow_up=true on schedule_reminder. For a one-shot that's clearly a real commitment she's been avoiding, OFFER it ("want me to check back if you haven't?") and set it if she agrees. (b) Replying to a check-back, there are FOUR answers — handle each: "done / did it / taken care of" → confirm_reminder (closes the loop). "drop it / never mind / let it go" → cancel_reminder (clean release, no guilt). "not yet / haven't" → do NOT just say ok: respond warmly, ask ONE short question about what's actually blocking it, and if she names a later time use snooze_reminder to move the next check there; otherwise leave it (it will resurface). "too big / overwhelming / too much" → break it into the SMALLEST 2-minute first step, state that step, and re-commit to just that (snooze_reminder to a soon time, or schedule_reminder for the small step) — shrink, don't drop. Never shame; always keep the easy exit open. confirm = she did it; cancel = she's abandoning it; snooze = she's deferring (stays alive).
+
+EMAIL WATCH (expecting a specific email): when she says she's waiting on / expecting a particular email and wants to know when it arrives — "let me know when I get the email from X", "tell me when my refund email comes in", "watch for the lease confirmation" — call watch_for_email with a short "what" (her words) and a "query" you build in Gmail search syntax (from:sender, subject:keywords, or key terms — be reasonably broad so it doesn't miss). She'll get a Telegram alert the moment a new match lands (checked every ~15 min). "Stop watching for X / never mind" → cancel_email_watch; "what am I waiting on?" → list_email_watches. This is DIFFERENT from schedule_reminder (a timed nudge) and from the proactive digest (unexpected mail) — it's for a KNOWN incoming email.
 
 INBOX SUGGESTIONS (accept-to-create): twice a day Scout sends a "📥 From your inbox — suggested to-dos:" digest with NUMBERED suggested tasks (some marked 📅 = calendar events). When she replies to accept them — "add all", "add 1 and 3", "yes", "do the PTO one", "add those" — CREATE each accepted suggestion: create_task for to-dos, create_calendar_event for the 📅 ones (ask for the date/time if it isn't in the suggestion). The numbered list is in the recent history — map her selection to it. If she says "add all", create every one. Confirm briefly what you added ("Added 3 to your list."). If she edits one ("add 2 but change it to..."), honor the edit. This is her lightweight way to turn email into tasks — make it one-tap easy, never make her re-type the task.
 
@@ -1109,6 +1112,25 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "watch_for_email",
+    description: "Watch her inbox for a SPECIFIC incoming email she's expecting, and alert her (Telegram) the moment it arrives. Use when she says things like 'let me know when I get the email from the school', 'tell me when my Amazon refund email comes in', 'watch for the lease confirmation from QC'. `what` = a short human description of what she's waiting for. `query` = a Gmail search string YOU construct to catch it (e.g. 'from:qcusd.org', 'subject:refund', 'from:amazon subject:order', or key terms). It's one-shot: fires once when a new match lands, then stops. Confirm what you're watching for.",
+    input_schema: {
+      type: "object",
+      properties: { what: { type: "string" }, query: { type: "string", description: "Gmail search syntax to match the awaited email." } },
+      required: ["what", "query"],
+    },
+  },
+  {
+    name: "list_email_watches",
+    description: "List the emails she's currently waiting on (active watches set via watch_for_email).",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "cancel_email_watch",
+    description: "Stop watching for an expected email. Pass her wording as `what` to fuzzy-match the watch to remove ('stop watching for the school email', 'never mind the refund one').",
+    input_schema: { type: "object", properties: { what: { type: "string" } }, required: ["what"] },
+  },
+  {
     name: "create_email_draft",
     description: "Create a Gmail draft (does NOT send). Safe to do when she asks you to write something.",
     input_schema: {
@@ -1848,6 +1870,33 @@ async function runTool(
     } catch (err) {
       return j({ ok: false, error: err instanceof Error ? err.message : "Gmail error" });
     }
+  }
+
+  if (name === "watch_for_email") {
+    const gmail = await import("./integrations/gmail");
+    if (!gmail.gmailConfigured()) return j({ ok: false, error: "Gmail not connected." });
+    const query = String(input.query ?? "").trim();
+    const what = String(input.what ?? "").trim();
+    if (!query || !what) return j({ ok: false, error: "Need both what she's waiting for and a search query." });
+    const watches = JSON.parse((await getSetting("email_watches")) || "[]") as { id: string; desc: string; query: string; seenIds: string[]; createdMs: number }[];
+    // Baseline current matches so we only alert on NEW arrivals.
+    const baseline = await gmail.listEmails(`${query} newer_than:7d`, 10).catch(() => []);
+    watches.push({ id: crypto.randomUUID(), desc: what, query, seenIds: baseline.map((e) => e.id), createdMs: Date.now() });
+    await setSetting("email_watches", JSON.stringify(watches.slice(-20)));
+    return j({ ok: true, summary: `Watching for ${what} — I'll ping you the moment it lands.` });
+  }
+
+  if (name === "list_email_watches") {
+    const watches = JSON.parse((await getSetting("email_watches")) || "[]") as { desc: string }[];
+    return j({ ok: true, watches: watches.map((w) => w.desc) });
+  }
+
+  if (name === "cancel_email_watch") {
+    const q = String(input.what ?? "").toLowerCase().trim();
+    const watches = JSON.parse((await getSetting("email_watches")) || "[]") as { desc: string }[];
+    const kept = watches.filter((w) => !(w.desc.toLowerCase().includes(q) || q.includes(w.desc.toLowerCase())));
+    await setSetting("email_watches", JSON.stringify(kept));
+    return j({ ok: true, summary: watches.length === kept.length ? "No matching watch found." : "Stopped watching for that.", removed: watches.length - kept.length });
   }
 
   if (name === "search_emails" || name === "read_email" || name === "create_email_draft" || name === "send_email") {
